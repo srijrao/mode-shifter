@@ -1,0 +1,10 @@
+{
+  "id": "mode-shifter",
+  "name": "Mode Shifter",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "Obsidian plugin forked from the sample, customized for srijrao.",
+  "author": "srijrao on Github",
+  "authorUrl": "https://github.com/srijrao",
+  "isDesktopOnly": false
+}
