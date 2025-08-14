@@ -1,5 +1,9 @@
 {
   "compilerOptions": {
+  // Skip type-checking of declaration files in node_modules. This is a
+  // pragmatic, low-risk setting for editor/CI checks to avoid failures
+  // coming from third-party type packages that are unrelated to our code.
+  "skipLibCheck": true,
     "baseUrl": ".",
     "inlineSourceMap": true,
     "inlineSources": true,
