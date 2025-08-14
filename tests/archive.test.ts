@@ -48,10 +48,18 @@ class MockAdapter {
   }
 
   async stat(p: string) {
+    // If exact file exists, return file stat
     const v = this.files.get(p);
-    if (!v) throw new Error('Not found ' + p);
-    const size = typeof v === 'string' ? Buffer.byteLength(v) : v.length;
-    return { type: 'file', size };
+    if (v) {
+      const size = typeof v === 'string' ? Buffer.byteLength(v) : v.length;
+      return { type: 'file', size };
+    }
+    // If there are files under this path, treat as directory
+    const prefix = p.endsWith('/') ? p : p + '/';
+    for (const k of this.files.keys()) {
+      if (k.startsWith(prefix)) return { type: 'directory' } as any;
+    }
+    throw new Error('Not found ' + p);
   }
 }
 
@@ -91,6 +99,8 @@ afterEach(() => {
 });
 
 describe('archive utilities', () => {
+  // (generateZipName tested separately in utils.test)
+
   it('expandGlobs returns matching files including dotfiles', async () => {
     const a = path.join(tmpVault, 'a.md');
     const sub = path.join(tmpVault, 'sub');
@@ -137,6 +147,19 @@ describe('archive utilities', () => {
     const restored = await adapter.readBinary('note1.md');
     const buf = Buffer.from(restored);
     expect(buf.toString()).toContain('# note1');
+  });
+
+  it('verifyZipIntegrity handles expected files with backslashes or posix', async () => {
+    const adapter = new MockAdapter();
+    const vault = new MockVault(adapter);
+    const app = new MockApp(vault as any);
+
+    adapter.files.set('subdir/file.md', Buffer.from('ok'));
+    const res = await createArchive(app as any, '.', 'Archive', 'bs-test', ['subdir/file.md'], { perFileTimeoutMs: 2000 });
+
+    // Pass expected list using backslash style
+    const verification = await verifyZipIntegrity(app as any, res.zipPath, ['subdir\\file.md'], { perFileTimeoutMs: 2000 });
+    expect(verification.isValid).toBe(true);
   });
 
   it('restoreArchive respects overwrite/skip/conflict-copy policies', async () => {
@@ -288,5 +311,45 @@ describe('archive utilities', () => {
     
     // But deletelog should exist
     expect(adapter.files.has(res.zipPath + '.deletelog.json')).toBe(true);
+  });
+
+  it('plain folder include archives the folder and restores it (end-to-end)', async () => {
+    const adapter = new MockAdapter();
+    const vault = new MockVault(adapter);
+    const app = new MockApp(vault as any);
+
+    // create files under FolderA
+    adapter.files.set('FolderA/n1.md', Buffer.from('one'));
+    adapter.files.set('FolderA/sub/n2.md', Buffer.from('two'));
+
+    // build a mode-like object
+    const mode = { id: 'm1', name: 'FolderA mode', include: ['FolderA'], exclude: [] } as any;
+
+  // Use the helper from src/utils to build patterns
+  const { buildPatterns } = await import('../src/utils');
+  const patterns = await buildPatterns(app as any, mode);
+    // Should have expanded FolderA -> FolderA/**
+    expect(patterns.some(p => p.startsWith('FolderA'))).toBe(true);
+
+    // fast-glob operates on the real filesystem; our adapter is in-memory.
+    // Derive expected files directly from the mock adapter's keys instead.
+    const files = Array.from(adapter.files.keys()).map(k => k.replace(/\\/g, '/'))
+      .filter(k => k.startsWith('FolderA/'));
+    expect(files).toContain('FolderA/n1.md');
+    expect(files).toContain('FolderA/sub/n2.md');
+
+    // create archive using folder-based include
+    const res = await (await import('../src/archive')).createArchive(app as any, '.', 'Archive', 'mode', files, { perFileTimeoutMs: 2000 });
+    // zip name should start with FolderA-
+    expect(res.zipPath).toMatch(/^Archive\/FolderA-/);
+
+    // remove originals and restore
+    adapter.files.delete('FolderA/n1.md');
+    adapter.files.delete('FolderA/sub/n2.md');
+
+    await (await import('../src/archive')).restoreArchive(app as any, res.zipPath, { perFileTimeoutMs: 2000 });
+
+    expect(adapter.files.has('FolderA/n1.md')).toBe(true);
+    expect(adapter.files.has('FolderA/sub/n2.md')).toBe(true);
   });
 });

@@ -1,5 +1,5 @@
 import { App, Plugin, PluginSettingTab, Setting, Notice, Modal, TextComponent, ButtonComponent } from 'obsidian';
-import { generateZipName, calculateModeSize, formatBytes } from './src/utils';
+import { generateZipName, calculateModeSize, buildPatterns, getVaultBasePath } from './src/utils';
 import { createArchive, restoreArchive, expandGlobs, RestorePolicy } from './src/archive';
 
 interface ModeEntry {
@@ -8,20 +8,20 @@ interface ModeEntry {
 	include: string[];
 	exclude?: string[];
 	description?: string;
+	active?: boolean;
 }
 
 interface ModeShifterSettings {
 	archiveFolder: string;
 	modes: ModeEntry[];
 	lastActiveModeId?: string;
+	lastArchives?: Record<string,string>;
 	restorePolicy: RestorePolicy;
 }
 
 const DEFAULT_SETTINGS: ModeShifterSettings = {
 	archiveFolder: 'Mode Shifter Archive',
-	modes: [
-		{ id: 'normal', name: 'Normal', include: [], description: 'Default mode, cannot be deleted' }
-	],
+	modes: [],
 	restorePolicy: 'overwrite'
 };
 
@@ -33,22 +33,56 @@ export default class ModeShifterPlugin extends Plugin {
 
 		this.addCommand({
 			id: 'mode-shifter-preview',
-			name: 'Preview Mode Selection',
-			callback: () => new Notice('Preview not implemented yet')
+			name: 'Preview Current Mode',
+			callback: async () => {
+				const current = this.settings.modes.find(m => m.active);
+				if (!current) { new Notice('No active mode'); return; }
+				const patterns = await buildPatterns(this.app, current);
+				const vaultBase = getVaultBasePath(this.app);
+				const files = patterns.length ? await expandGlobs(vaultBase, patterns) : [];
+				new PreviewModal(this.app, current.name, files).open();
+			}
 		});
 
 		this.addCommand({
 			id: 'mode-shifter-activate',
-			name: 'Activate Mode',
+			name: 'Activate Current Mode',
 			callback: async () => {
-				// For now use demo: gather files from first mode (except normal)
-				const mode = this.settings.modes[1] || this.settings.modes[0];
-				const files = mode.include && mode.include.length ? await expandGlobs('.', mode.include) : [];
+				const mode = this.settings.modes.find(m => m.active) || this.settings.modes[0];
+				if (!mode) { new Notice('No modes configured'); return; }
+				const cmdPatterns = await buildPatterns(this.app, mode);
+				const vaultBase = getVaultBasePath(this.app);
+				const files = cmdPatterns.length ? await expandGlobs(vaultBase, cmdPatterns) : [];
 				try {
-					const res = await createArchive(this.app, '.', this.settings.archiveFolder, mode.name || 'mode', files, { perFileTimeoutMs: 30000, overallTimeoutMs: 10*60*1000, deleteOriginals: true, onProgress: (d,t)=>{} });
+					const res = await createArchive(this.app, vaultBase, this.settings.archiveFolder, mode.name || 'mode', files, { perFileTimeoutMs: 30000, overallTimeoutMs: 10*60*1000, deleteOriginals: true, onProgress: (d,t)=>{} });
+					// record last archive for this mode id
+					this.settings.lastArchives = Object.assign({}, this.settings.lastArchives || {});
+					this.settings.lastArchives[mode.id] = res.zipPath;
+					// mark this mode active and deactivate others
+					this.settings.modes = this.settings.modes.map(m => ({ ...m, active: m.id === mode.id }));
+					await this.saveSettings();
 					new Notice(`Archive created and originals deleted: ${res.zipPath}`);
 				} catch (e:any) {
 					new Notice('Archive failed: ' + (e && e.message));
+				}
+			}
+		});
+
+		this.addCommand({
+			id: 'mode-shifter-unapply',
+			name: 'Unapply Current Mode',
+			callback: async () => {
+				const mode = this.settings.modes.find(m => m.active);
+				if (!mode) { new Notice('No active mode'); return; }
+				const last = this.settings.lastArchives && this.settings.lastArchives[mode.id];
+				if (!last) { new Notice('No archive to restore for current mode'); return; }
+				try {
+					await restoreArchive(this.app, last, { policy: this.settings.restorePolicy });
+					this.settings.modes = this.settings.modes.map(m => ({ ...m, active: false }));
+					await this.saveSettings();
+					new Notice(`Mode unapplied: ${mode.name}`);
+				} catch (e:any) {
+					new Notice('Unapply failed: ' + (e && e.message));
 				}
 			}
 		});
@@ -81,6 +115,8 @@ export default class ModeShifterPlugin extends Plugin {
 
 	async loadSettings() {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		// Migration: remove legacy "normal" mode if it exists
+		this.settings.modes = this.settings.modes.filter(m => m.id !== 'normal');
 	}
 
 	async saveSettings() {
@@ -151,15 +187,20 @@ class ModeShifterSettingTab extends PluginSettingTab {
 		
 		new Setting(containerEl)
 			.setName('Create demo archive')
-			.setDesc('Creates a small placeholder zip in the archive folder')
+			.setDesc('Creates a proper empty zip file in the archive folder for testing')
 			.addButton(btn => btn
 				.setButtonText('Create')
 				.onClick(async () => {
 					const name = generateZipName('demo');
-					const path = `${this.plugin.settings.archiveFolder}/${name}.zip`;
+					const path = `${this.plugin.settings.archiveFolder}/${name}`;
 					await this.app.vault.createFolder(this.plugin.settings.archiveFolder).catch(()=>{});
-					await this.app.vault.adapter.writeBinary(path, (new Uint8Array([80,75])).buffer as ArrayBuffer);
-					new Notice(`Created ${path}`);
+					
+					// Create a proper empty ZIP file using JSZip
+					const JSZip = require('jszip');
+					const zip = new JSZip();
+					const content = await zip.generateAsync({ type: 'uint8array' });
+					await this.app.vault.adapter.writeBinary(path, content.buffer as ArrayBuffer);
+					new Notice(`Created empty demo archive: ${path}`);
 				}));
 	}
 

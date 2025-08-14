@@ -6,8 +6,8 @@ describe('utils', () => {
     const name1 = generateZipName('test');
     const name2 = generateZipName('test');
     
-    expect(name1).toMatch(/^test-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[a-z0-9]{6}$/);
-    expect(name2).toMatch(/^test-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[a-z0-9]{6}$/);
+  expect(name1).toMatch(/^test-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[a-z0-9]{6}\.zip$/);
+  expect(name2).toMatch(/^test-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[a-z0-9]{6}\.zip$/);
     expect(name1).not.toBe(name2);
   });
 

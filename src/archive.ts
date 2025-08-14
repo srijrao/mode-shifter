@@ -18,7 +18,13 @@ export async function expandGlobs(vaultPath: string, patterns: string[]): Promis
   if (!patterns || patterns.length === 0) return [];
   const opts = { cwd: vaultPath, dot: true, onlyFiles: true, unique: true } as any;
   const entries = await fg(patterns, opts);
-  return entries;
+  // fast-glob returns posix-style paths; ensure consistency
+  return entries.map((p: string) => p.replace(/\\/g, '/'));
+}
+
+function normalizePath(p: string) {
+  if (!p) return p;
+  return p.replace(/\\/g, '/').replace(/^\.\//, '');
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number, message = 'Operation timed out') {
@@ -40,9 +46,10 @@ export async function verifyZipIntegrity(app: App, zipPath: string, expectedFile
     const zip = await JSZip.loadAsync(data as ArrayBufferLike);
     
     // Filter out directory entries (JSZip automatically creates these)
-    const zipEntries = Object.keys(zip.files).filter(name => !name.endsWith('/'));
-    const missingFiles = expectedFiles.filter(f => !zipEntries.includes(f));
-    const extraFiles = zipEntries.filter(f => !expectedFiles.includes(f));
+  const zipEntries = Object.keys(zip.files).filter(name => !name.endsWith('/'));
+  const normalizedExpected = (expectedFiles || []).map(normalizePath);
+  const missingFiles = normalizedExpected.filter(f => !zipEntries.includes(f));
+  const extraFiles = zipEntries.filter(f => !normalizedExpected.includes(f));
     
     if (missingFiles.length > 0) {
       errors.push(`Missing files in zip: ${missingFiles.join(', ')}`);
@@ -111,7 +118,14 @@ export async function createArchive(app: App, vaultPath: string, archiveFolder: 
     const content = await withTimeout(zip.generateAsync({ type: 'uint8array' }), perFileTimeoutMs * 4, 'Zip generation timed out');
     const ts = new Date().toISOString().replace(/[:.]/g, '-');
     const hash = Math.random().toString(36).slice(2,8);
-    const zipName = `${modeName}-${ts}-${hash}.zip`;
+    // If all files share a common top-level folder, use that folder name for the zip base
+    let baseName = modeName;
+    if (files.length > 0) {
+      const tops = files.map(f => f.split('/')[0]);
+      const uniq = Array.from(new Set(tops));
+      if (uniq.length === 1 && uniq[0]) baseName = uniq[0];
+    }
+    const zipName = `${baseName}-${ts}-${hash}.zip`;
     const zipPath = `${archiveFolder}/${zipName}`;
 
     // ensure folder
