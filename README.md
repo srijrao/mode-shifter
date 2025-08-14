@@ -1,94 +1,191 @@
-# Obsidian Sample Plugin
+# Mode Shifter
 
-This is a sample plugin for Obsidian (https://obsidian.md).
+A powerful Obsidian plugin that allows users to easily switch between different 'modes' by archiving and restoring sets of files. Perfect for managing different project states, hiding completed work, or organizing large vaults.
 
-This project uses TypeScript to provide type checking and documentation.
-The repo depends on the latest plugin API (obsidian.d.ts) in TypeScript Definition format, which contains TSDoc comments describing what it does.
+## ✨ Features
 
-This sample plugin demonstrates some of the basic functionality the plugin API can do.
-- Adds a ribbon icon, which shows a Notice when clicked.
-- Adds a command "Open Sample Modal" which opens a Modal.
-- Adds a plugin setting tab to the settings page.
-- Registers a global click event and output 'click' to the console.
-- Registers a global interval which logs 'setInterval' to the console.
+### 🎯 Core Functionality
+- **Custom Modes**: Define multiple modes with include/exclude glob patterns
+- **Smart Archiving**: Files are zipped and moved to an archive folder, removing them from Obsidian's index
+- **Safe Restoration**: Multiple restoration policies (overwrite, skip, create conflict copies)
+- **Robust Operations**: Comprehensive verification and rollback mechanisms
 
-## First time developing plugins?
+### 🔧 Mode Management
+- **Visual Mode Editor**: Rich UI for creating and editing modes
+- **File Pattern Support**: Use glob patterns like `*.md`, `folder/**`, `!temp/**`
+- **Size Calculation**: See how much space each mode consumes
+- **File Preview**: Preview which files will be affected before activation
 
-Quick starting guide for new plugin devs:
+### 🛡️ Safety & Reliability
+- **Zip Verification**: Validates archives before any file deletion
+- **Batched Operations**: Processes files in batches with checkpoints
+- **Automatic Rollback**: Restores files if operations fail partway through
+- **Conflict Resolution**: Handle existing files during restoration
 
-- Check if [someone already developed a plugin for what you want](https://obsidian.md/plugins)! There might be an existing plugin similar enough that you can partner up with.
-- Make a copy of this repo as a template with the "Use this template" button (login to GitHub if you don't see it).
-- Clone your repo to a local development folder. For convenience, you can place this folder in your `.obsidian/plugins/your-plugin-name` folder.
-- Install NodeJS, then run `npm i` in the command line under your repo folder.
-- Run `npm run dev` to compile your plugin from `main.ts` to `main.js`.
-- Make changes to `main.ts` (or create new `.ts` files). Those changes should be automatically compiled into `main.js`.
-- Reload Obsidian to load the new version of your plugin.
-- Enable plugin in settings window.
-- For updates to the Obsidian API run `npm update` in the command line under your repo folder.
+### 🎨 User Interface
+- **Settings Panel**: Comprehensive configuration interface
+- **Mode List**: Visual overview of all defined modes with actions
+- **Progress Indicators**: Real-time feedback during operations
+- **Size Display**: Human-readable file size formatting
 
-## Releasing new releases
+## 🚀 Installation
 
-- Update your `manifest.json` with your new version number, such as `1.0.1`, and the minimum Obsidian version required for your latest release.
-- Update your `versions.json` file with `"new-plugin-version": "minimum-obsidian-version"` so older versions of Obsidian can download an older version of your plugin that's compatible.
-- Create new GitHub release using your new version number as the "Tag version". Use the exact version number, don't include a prefix `v`. See here for an example: https://github.com/obsidianmd/obsidian-sample-plugin/releases
-- Upload the files `manifest.json`, `main.js`, `styles.css` as binary attachments. Note: The manifest.json file must be in two places, first the root path of your repository and also in the release.
-- Publish the release.
+1. Copy the plugin folder to your vault's `.obsidian/plugins/mode-shifter` directory
+2. In Obsidian, go to Settings → Community plugins → Turn off Safe Mode
+3. Enable the "Mode Shifter" plugin
 
-> You can simplify the version bump process by running `npm version patch`, `npm version minor` or `npm version major` after updating `minAppVersion` manually in `manifest.json`.
-> The command will bump version in `manifest.json` and `package.json`, and add the entry for the new version to `versions.json`
+## 📖 Usage
 
-## Adding your plugin to the community plugin list
+### Creating a Mode
 
-- Check the [plugin guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines).
-- Publish an initial version.
-- Make sure you have a `README.md` file in the root of your repo.
-- Make a pull request at https://github.com/obsidianmd/obsidian-releases to add your plugin.
+1. Open Settings → Mode Shifter
+2. Click "Add Mode"
+3. Configure:
+   - **Name**: Display name for your mode
+   - **Description**: Optional description
+   - **Include patterns**: Glob patterns for files to archive (e.g., `*.md`, `folder/**`)
+   - **Exclude patterns**: Optional patterns to exclude (e.g., `temp/**`, `*.tmp`)
 
-## How to use
+### Activating a Mode
 
-- Clone this repo.
-- Make sure your NodeJS is at least v16 (`node --version`).
-- `npm i` or `yarn` to install dependencies.
-- `npm run dev` to start compilation in watch mode.
+1. In the Mode Shifter settings, find your mode
+2. Click "Preview Files" to see what will be affected
+3. Click "Calculate Size" to see storage impact
+4. Click "Activate Mode" to archive the files
 
-## Manually installing the plugin
+When activated, matching files are:
+- Compressed into a timestamped zip file
+- Moved to the archive folder
+- Removed from Obsidian's file system (no longer indexed/searchable)
 
-- Copy over `main.js`, `styles.css`, `manifest.json` to your vault `VaultFolder/.obsidian/plugins/your-plugin-id/`.
+### Restoring Files
 
-## Improve code quality with eslint (optional)
-- [ESLint](https://eslint.org/) is a tool that analyzes your code to quickly find problems. You can run ESLint against your plugin to find common bugs and ways to improve your code. 
-- To use eslint with this project, make sure to install eslint from terminal:
-  - `npm install -g eslint`
-- To use eslint to analyze this project use this command:
-  - `eslint main.ts`
-  - eslint will then create a report with suggestions for code improvement by file and line number.
-- If your source code is in a folder, such as `src`, you can use eslint with this command to analyze all files in that folder:
-  - `eslint .\src\`
+Use the "Restore Last Archive" command or the mode-specific restore options.
 
-## Funding URL
+Restoration policies:
+- **Overwrite**: Replace existing files with archived versions
+- **Skip**: Keep existing files, skip archived versions
+- **Conflict Copy**: Create renamed copies (e.g., `file-conflict-abc123.md`)
 
-You can include funding URLs where people who use your plugin can financially support it.
+## ⚙️ Configuration
 
-The simple way is to set the `fundingUrl` field to your link in your `manifest.json` file:
+### Archive Folder
+Set where zip archives are stored (default: "Mode Shifter Archive")
 
-```json
-{
-    "fundingUrl": "https://buymeacoffee.com"
-}
+### Restore Policy
+Choose default behavior when restoring files that already exist
+
+### Mode Definitions
+Each mode includes:
+- Unique ID and name
+- Include patterns (required)
+- Exclude patterns (optional)
+- Description (optional)
+
+## 🔧 Technical Details
+
+### File Operations
+- Uses `fast-glob` for pattern matching
+- `jszip` for compression/decompression
+- Atomic operations with verification
+- Timeout protection for large operations
+
+### Safety Mechanisms
+- **Pre-deletion verification**: Archives are tested before original deletion
+- **Batched processing**: Large operations split into checkpointed batches
+- **Rollback capability**: Failed operations automatically restore from archive
+- **Manifest logging**: Detailed logs of all operations
+
+### Performance
+- Streaming operations for large files
+- Configurable batch sizes
+- Progress callbacks for UI updates
+- Timeout handling for robust operations
+
+## 🧪 Development
+
+### Prerequisites
+- Node.js and npm
+- TypeScript
+
+### Setup
+```powershell
+npm install --legacy-peer-deps
 ```
 
-If you have multiple URLs, you can also do:
+### Development Commands
+```powershell
+# Run tests
+npm test
 
-```json
-{
-    "fundingUrl": {
-        "Buy Me a Coffee": "https://buymeacoffee.com",
-        "GitHub Sponsor": "https://github.com/sponsors",
-        "Patreon": "https://www.patreon.com/"
-    }
-}
+# Type checking
+npm run typecheck
+
+# Build plugin
+npm run build
+
+# Development mode (watch)
+npm run dev
 ```
 
-## API Documentation
+### Testing
+Comprehensive test suite covering:
+- Archive/restore functionality
+- Zip verification
+- Rollback mechanisms
+- Size calculations
+- Error handling
 
-See https://github.com/obsidianmd/obsidian-api
+## 📝 API Reference
+
+### Core Functions
+
+#### `createArchive(app, vaultPath, archiveFolder, modeName, files, options)`
+Creates a zip archive of specified files with optional deletion.
+
+#### `restoreArchive(app, zipPath, options)`
+Restores files from a zip archive with configurable conflict resolution.
+
+#### `verifyZipIntegrity(app, zipPath, expectedFiles, options)`
+Verifies zip contents match expected file list.
+
+#### `calculateModeSize(app, files)`
+Calculates total size and file count for a set of files.
+
+### Type Definitions
+
+```typescript
+interface ModeEntry {
+  id: string;
+  name: string;
+  include: string[];
+  exclude?: string[];
+  description?: string;
+}
+
+interface ModeShifterSettings {
+  archiveFolder: string;
+  modes: ModeEntry[];
+  lastActiveModeId?: string;
+  restorePolicy: RestorePolicy;
+}
+
+type RestorePolicy = 'overwrite' | 'skip' | 'conflict-copy';
+```
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Add tests for new functionality
+4. Ensure all tests pass: `npm test`
+5. Run type checking: `npm run typecheck`
+6. Submit a pull request
+
+## 📄 License
+
+MIT License - see LICENSE file for details.
+
+## 🙏 Acknowledgments
+
+Built for the Obsidian community with focus on data safety and user experience.

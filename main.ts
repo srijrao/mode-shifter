@@ -1,86 +1,83 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, Notice, Modal, TextComponent, ButtonComponent } from 'obsidian';
+import { generateZipName, calculateModeSize, formatBytes } from './src/utils';
+import { createArchive, restoreArchive, expandGlobs, RestorePolicy } from './src/archive';
 
-// Remember to rename these classes and interfaces!
-
-interface MyPluginSettings {
-	mySetting: string;
+interface ModeEntry {
+	id: string;
+	name: string;
+	include: string[];
+	exclude?: string[];
+	description?: string;
 }
 
-const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: 'default'
+interface ModeShifterSettings {
+	archiveFolder: string;
+	modes: ModeEntry[];
+	lastActiveModeId?: string;
+	restorePolicy: RestorePolicy;
 }
 
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+const DEFAULT_SETTINGS: ModeShifterSettings = {
+	archiveFolder: 'Mode Shifter Archive',
+	modes: [
+		{ id: 'normal', name: 'Normal', include: [], description: 'Default mode, cannot be deleted' }
+	],
+	restorePolicy: 'overwrite'
+};
+
+export default class ModeShifterPlugin extends Plugin {
+	settings: ModeShifterSettings;
 
 	async onload() {
 		await this.loadSettings();
 
-		// This creates an icon in the left ribbon.
-		const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
-		// Perform additional things with the ribbon
-		ribbonIconEl.addClass('my-plugin-ribbon-class');
-
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status Bar Text');
-
-		// This adds a simple command that can be triggered anywhere
 		this.addCommand({
-			id: 'open-sample-modal-simple',
-			name: 'Open sample modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
+			id: 'mode-shifter-preview',
+			name: 'Preview Mode Selection',
+			callback: () => new Notice('Preview not implemented yet')
 		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'sample-editor-command',
-			name: 'Sample editor command',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				console.log(editor.getSelection());
-				editor.replaceSelection('Sample Editor Command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-sample-modal-complex',
-			name: 'Open sample modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
 
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
+		this.addCommand({
+			id: 'mode-shifter-activate',
+			name: 'Activate Mode',
+			callback: async () => {
+				// For now use demo: gather files from first mode (except normal)
+				const mode = this.settings.modes[1] || this.settings.modes[0];
+				const files = mode.include && mode.include.length ? await expandGlobs('.', mode.include) : [];
+				try {
+					const res = await createArchive(this.app, '.', this.settings.archiveFolder, mode.name || 'mode', files, { perFileTimeoutMs: 30000, overallTimeoutMs: 10*60*1000, deleteOriginals: true, onProgress: (d,t)=>{} });
+					new Notice(`Archive created and originals deleted: ${res.zipPath}`);
+				} catch (e:any) {
+					new Notice('Archive failed: ' + (e && e.message));
 				}
 			}
 		});
 
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			console.log('click', evt);
+		this.addCommand({
+			id: 'mode-shifter-restore-last',
+			name: 'Restore Last Archive',
+			callback: async () => {
+				// find latest zip in archive folder by name (simple approach)
+				const folder = this.settings.archiveFolder;
+				try {
+					const children = await this.app.vault.adapter.list(folder);
+					const files = (children.files || []).filter((f:string)=>f.endsWith('.zip'));
+					if (!files.length) { new Notice('No archives found'); return; }
+					files.sort();
+					const latest = files[files.length-1];
+					const path = `${folder}/${latest}`;
+					await restoreArchive(this.app, path, { policy: this.settings.restorePolicy });
+					new Notice(`Restored ${path} using ${this.settings.restorePolicy} policy`);
+				} catch (e) {
+					new Notice('Restore failed: ' + (e && e.message));
+				}
+			}
 		});
 
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
+		this.addSettingTab(new ModeShifterSettingTab(this.app, this));
 	}
 
-	onunload() {
-
-	}
+	onunload() {}
 
 	async loadSettings() {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
@@ -91,44 +88,347 @@ export default class MyPlugin extends Plugin {
 	}
 }
 
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
+class ModeShifterSettingTab extends PluginSettingTab {
+	plugin: ModeShifterPlugin;
 
-	onOpen() {
-		const {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
-
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
-	}
-}
-
-class SampleSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
-
-	constructor(app: App, plugin: MyPlugin) {
+	constructor(app: App, plugin: ModeShifterPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}
 
 	display(): void {
 		const {containerEl} = this;
-
 		containerEl.empty();
 
+		containerEl.createEl('h2', {text: 'Mode Shifter Settings'});
+
+		// Archive folder setting
 		new Setting(containerEl)
-			.setName('Setting #1')
-			.setDesc('It\'s a secret')
+			.setName('Archive folder')
+			.setDesc('Folder inside vault where mode archives (zip) are stored')
 			.addText(text => text
-				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.mySetting)
+				.setPlaceholder('Mode Shifter Archive')
+				.setValue(this.plugin.settings.archiveFolder)
 				.onChange(async (value) => {
-					this.plugin.settings.mySetting = value;
+					this.plugin.settings.archiveFolder = value.trim() || DEFAULT_SETTINGS.archiveFolder;
 					await this.plugin.saveSettings();
 				}));
+
+		// Restore policy setting
+		new Setting(containerEl)
+			.setName('Restore policy')
+			.setDesc('How to handle conflicts when restoring files')
+			.addDropdown(dropdown => dropdown
+				.addOption('overwrite', 'Overwrite existing files')
+				.addOption('skip', 'Skip existing files')
+				.addOption('conflict-copy', 'Create conflict copies')
+				.setValue(this.plugin.settings.restorePolicy)
+				.onChange(async (value: RestorePolicy) => {
+					this.plugin.settings.restorePolicy = value;
+					await this.plugin.saveSettings();
+				}));
+
+		// Modes section
+		containerEl.createEl('h3', {text: 'Modes'});
+		containerEl.createEl('p', {text: 'Define different modes by specifying which files/folders to include. Files matching the patterns will be archived when the mode is activated.'});
+
+		// Add new mode button
+		new Setting(containerEl)
+			.setName('Add new mode')
+			.setDesc('Create a new mode definition')
+			.addButton(btn => btn
+				.setButtonText('Add Mode')
+				.setCta()
+				.onClick(() => {
+					new ModeEditModal(this.app, this.plugin, null, () => this.display()).open();
+				}));
+
+		// Display existing modes
+		this.displayModes(containerEl);
+
+		// Demo/test actions
+		containerEl.createEl('h3', {text: 'Testing & Demo'});
+		
+		new Setting(containerEl)
+			.setName('Create demo archive')
+			.setDesc('Creates a small placeholder zip in the archive folder')
+			.addButton(btn => btn
+				.setButtonText('Create')
+				.onClick(async () => {
+					const name = generateZipName('demo');
+					const path = `${this.plugin.settings.archiveFolder}/${name}.zip`;
+					await this.app.vault.createFolder(this.plugin.settings.archiveFolder).catch(()=>{});
+					await this.app.vault.adapter.writeBinary(path, (new Uint8Array([80,75])).buffer as ArrayBuffer);
+					new Notice(`Created ${path}`);
+				}));
+	}
+
+	private displayModes(containerEl: HTMLElement) {
+		this.plugin.settings.modes.forEach((mode, index) => {
+			const modeContainer = containerEl.createDiv('mode-setting-item');
+			modeContainer.style.border = '1px solid var(--background-modifier-border)';
+			modeContainer.style.borderRadius = '8px';
+			modeContainer.style.padding = '16px';
+			modeContainer.style.marginBottom = '12px';
+			modeContainer.style.backgroundColor = 'var(--background-secondary)';
+
+			const headerDiv = modeContainer.createDiv();
+			headerDiv.style.display = 'flex';
+			headerDiv.style.justifyContent = 'space-between';
+			headerDiv.style.alignItems = 'center';
+			headerDiv.style.marginBottom = '8px';
+
+			const titleDiv = headerDiv.createDiv();
+			titleDiv.createEl('strong', {text: mode.name});
+			if (mode.description) {
+				titleDiv.createEl('div', {text: mode.description, cls: 'setting-item-description'});
+			}
+
+			const actionsDiv = headerDiv.createDiv();
+			actionsDiv.style.display = 'flex';
+			actionsDiv.style.gap = '8px';
+
+			// Edit button
+			if (mode.id !== 'normal') { // Can't edit normal mode
+				const editBtn = actionsDiv.createEl('button', {text: 'Edit', cls: 'mod-cta'});
+				editBtn.onclick = () => {
+					new ModeEditModal(this.app, this.plugin, mode, () => this.display()).open();
+				};
+			}
+
+			// Delete button (except for normal mode)
+			if (mode.id !== 'normal') {
+				const deleteBtn = actionsDiv.createEl('button', {text: 'Delete', cls: 'mod-warning'});
+				deleteBtn.onclick = async () => {
+					this.plugin.settings.modes = this.plugin.settings.modes.filter(m => m.id !== mode.id);
+					await this.plugin.saveSettings();
+					this.display();
+					new Notice(`Deleted mode: ${mode.name}`);
+				};
+			}
+
+			// Mode details
+			const detailsDiv = modeContainer.createDiv();
+			detailsDiv.style.fontSize = '0.9em';
+			detailsDiv.style.color = 'var(--text-muted)';
+
+			if (mode.include && mode.include.length > 0) {
+				detailsDiv.createEl('div', {text: `Include patterns: ${mode.include.join(', ')}`});
+			}
+			if (mode.exclude && mode.exclude.length > 0) {
+				detailsDiv.createEl('div', {text: `Exclude patterns: ${mode.exclude.join(', ')}`});
+			}
+
+			// Size calculation and preview
+			const actionsRowDiv = modeContainer.createDiv();
+			actionsRowDiv.style.marginTop = '12px';
+			actionsRowDiv.style.display = 'flex';
+			actionsRowDiv.style.gap = '8px';
+			actionsRowDiv.style.flexWrap = 'wrap';
+
+			const previewBtn = actionsRowDiv.createEl('button', {text: 'Preview Files'});
+			previewBtn.onclick = async () => {
+				try {
+					const files = await expandGlobs('.', mode.include || []);
+					new PreviewModal(this.app, mode.name, files).open();
+				} catch (error) {
+					new Notice(`Preview failed: ${error}`);
+				}
+			};
+
+			const sizeBtn = actionsRowDiv.createEl('button', {text: 'Calculate Size'});
+			sizeBtn.onclick = async () => {
+				try {
+					const files = await expandGlobs('.', mode.include || []);
+					const sizeInfo = await calculateModeSize(this.app, files);
+					new Notice(`${mode.name}: ${sizeInfo.fileCount} files, ${sizeInfo.formattedSize}`);
+				} catch (error) {
+					new Notice(`Size calculation failed: ${error}`);
+				}
+			};
+
+			if (mode.id !== 'normal' && mode.include && mode.include.length > 0) {
+				const activateBtn = actionsRowDiv.createEl('button', {text: 'Activate Mode', cls: 'mod-cta'});
+				activateBtn.onclick = async () => {
+					try {
+						const files = await expandGlobs('.', mode.include || []);
+						const res = await createArchive(this.app, '.', this.plugin.settings.archiveFolder, mode.name, files, { 
+							perFileTimeoutMs: 30000, 
+							overallTimeoutMs: 10*60*1000, 
+							deleteOriginals: true, 
+							onProgress: (d,t) => {}
+						});
+						new Notice(`Mode activated: ${res.zipPath}`);
+					} catch (error) {
+						new Notice(`Mode activation failed: ${error}`);
+					}
+				};
+			}
+		});
+	}
+}
+
+class ModeEditModal extends Modal {
+	private mode: ModeEntry | null;
+	private plugin: ModeShifterPlugin;
+	private onSave: () => void;
+	private nameInput: TextComponent;
+	private descInput: TextComponent;
+	private includeInput: TextComponent;
+	private excludeInput: TextComponent;
+
+	constructor(app: App, plugin: ModeShifterPlugin, mode: ModeEntry | null, onSave: () => void) {
+		super(app);
+		this.mode = mode;
+		this.plugin = plugin;
+		this.onSave = onSave;
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		contentEl.createEl('h2', { text: this.mode ? 'Edit Mode' : 'Create New Mode' });
+
+		// Name
+		new Setting(contentEl)
+			.setName('Mode name')
+			.setDesc('Display name for this mode')
+			.addText(text => {
+				this.nameInput = text;
+				text.setPlaceholder('My Mode')
+					.setValue(this.mode?.name || '')
+					.inputEl.focus();
+			});
+
+		// Description
+		new Setting(contentEl)
+			.setName('Description')
+			.setDesc('Optional description of what this mode does')
+			.addText(text => {
+				this.descInput = text;
+				text.setPlaceholder('Description...')
+					.setValue(this.mode?.description || '');
+			});
+
+		// Include patterns
+		new Setting(contentEl)
+			.setName('Include patterns')
+			.setDesc('Glob patterns for files to include (comma-separated). Example: *.md, folder/**, !temp/**')
+			.addTextArea(text => {
+				this.includeInput = text as any;
+				text.setPlaceholder('*.md, folder/**')
+					.setValue(this.mode?.include?.join(', ') || '');
+				text.inputEl.rows = 3;
+			});
+
+		// Exclude patterns
+		new Setting(contentEl)
+			.setName('Exclude patterns')
+			.setDesc('Glob patterns for files to exclude (comma-separated, optional)')
+			.addTextArea(text => {
+				this.excludeInput = text as any;
+				text.setPlaceholder('temp/**, *.tmp')
+					.setValue(this.mode?.exclude?.join(', ') || '');
+				text.inputEl.rows = 2;
+			});
+
+		// Buttons
+		const buttonDiv = contentEl.createDiv();
+		buttonDiv.style.display = 'flex';
+		buttonDiv.style.justifyContent = 'flex-end';
+		buttonDiv.style.gap = '8px';
+		buttonDiv.style.marginTop = '16px';
+
+		const cancelBtn = buttonDiv.createEl('button', { text: 'Cancel' });
+		cancelBtn.onclick = () => this.close();
+
+		const saveBtn = buttonDiv.createEl('button', { text: 'Save', cls: 'mod-cta' });
+		saveBtn.onclick = () => this.save();
+	}
+
+	private async save() {
+		const name = this.nameInput.getValue().trim();
+		if (!name) {
+			new Notice('Mode name is required');
+			return;
+		}
+
+		const include = this.includeInput.getValue()
+			.split(',')
+			.map(p => p.trim())
+			.filter(p => p.length > 0);
+
+		const exclude = this.excludeInput.getValue()
+			.split(',')
+			.map(p => p.trim())
+			.filter(p => p.length > 0);
+
+		if (this.mode) {
+			// Edit existing mode
+			this.mode.name = name;
+			this.mode.description = this.descInput.getValue().trim() || undefined;
+			this.mode.include = include;
+			this.mode.exclude = exclude.length > 0 ? exclude : undefined;
+		} else {
+			// Create new mode
+			const newMode: ModeEntry = {
+				id: Date.now().toString(),
+				name,
+				description: this.descInput.getValue().trim() || undefined,
+				include,
+				exclude: exclude.length > 0 ? exclude : undefined
+			};
+			this.plugin.settings.modes.push(newMode);
+		}
+
+		await this.plugin.saveSettings();
+		this.onSave();
+		this.close();
+		new Notice(`Mode ${this.mode ? 'updated' : 'created'}: ${name}`);
+	}
+
+	onClose() {
+		const { contentEl } = this;
+		contentEl.empty();
+	}
+}
+
+class PreviewModal extends Modal {
+	private modeName: string;
+	private files: string[];
+
+	constructor(app: App, modeName: string, files: string[]) {
+		super(app);
+		this.modeName = modeName;
+		this.files = files;
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		contentEl.createEl('h2', { text: `Preview: ${this.modeName}` });
+		contentEl.createEl('p', { text: `${this.files.length} files will be affected:` });
+
+		const listEl = contentEl.createEl('ul');
+		listEl.style.maxHeight = '400px';
+		listEl.style.overflow = 'auto';
+		listEl.style.border = '1px solid var(--background-modifier-border)';
+		listEl.style.padding = '8px';
+		listEl.style.borderRadius = '4px';
+
+		this.files.slice(0, 100).forEach(file => {
+			listEl.createEl('li', { text: file });
+		});
+
+		if (this.files.length > 100) {
+			contentEl.createEl('p', { text: `... and ${this.files.length - 100} more files` });
+		}
+
+		const closeBtn = contentEl.createEl('button', { text: 'Close', cls: 'mod-cta' });
+		closeBtn.style.marginTop = '16px';
+		closeBtn.onclick = () => this.close();
+	}
+
+	onClose() {
+		const { contentEl } = this;
+		contentEl.empty();
 	}
 }

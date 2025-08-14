@@ -3,7 +3,7 @@
   "name": "Mode Shifter",
   "version": "1.0.0",
   "minAppVersion": "0.15.0",
-  "description": "Obsidian plugin forked from the sample, customized for srijrao.",
+  "description": "Easily switch between different 'modes' by archiving and restoring sets of files. Perfect for managing project states and organizing large vaults.",
   "author": "srijrao on Github",
   "authorUrl": "https://github.com/srijrao",
   "isDesktopOnly": false
