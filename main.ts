@@ -66,8 +66,9 @@ export default class ArchiverPlugin extends Plugin {
 							? folder.parent?.path || '' 
 							: this.settings.archiveFolder;
 						const res = await createArchive(this.app, vaultBase, archiveLocation, folder.name, filesToZip, { 
-							deleteOriginals: this.settings.deleteOriginalFolder 
-						});
+								deleteOriginals: this.settings.deleteOriginalFolder,
+								preserveBaseName: true // ensure folder.name is used for archive filename base
+							});
 						new Notice(`Archive created: ${res.zipPath}`);
 						if (this.settings.deleteOriginalFolder) {
 							await this.deleteFolderSafely(folder);
@@ -235,7 +236,8 @@ export default class ArchiverPlugin extends Plugin {
 				if (firstFolder instanceof TFolder) archiveLocation = firstFolder.parent?.path || '';
 			}
 			const res = await createArchive(this.app, vaultBase, archiveLocation, group.name, filesToZip, { 
-				deleteOriginals: this.settings.deleteOriginalFolder 
+				deleteOriginals: this.settings.deleteOriginalFolder,
+				preserveBaseName: true // ensure group name is used as archive base name
 			});
 			new Notice(`Group archive created: ${res.zipPath}`);
 			if (this.settings.deleteOriginalFolder) {
@@ -253,10 +255,12 @@ export default class ArchiverPlugin extends Plugin {
 		// Look for archives that might belong to this group
 		try {
 			const allArchives = await this.findAllArchives();
-			const groupName = group.name.toLowerCase().replace(/\s+/g, '-');
-			const matchingArchives = allArchives.filter(archive => 
-				archive.path.toLowerCase().includes(groupName)
-			);
+			const groupName = group.name.toLowerCase().replace(/[\s_]+/g, '-');
+			const matchingArchives = allArchives.filter(archive => {
+				const name = archive.path.split('/').pop()?.toLowerCase() || archive.path.toLowerCase();
+				// We consider an archive to belong to the group if its filename starts with the groupName followed by '-' (from our slugified zip naming)
+				return name.startsWith(groupName + '-');
+			});
 			
 			if (!matchingArchives.length) {
 				new Notice(`No archives found for group '${group.name}'`);

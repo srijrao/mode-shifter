@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import ArchiverPlugin from '../main';
+import ArchiverPlugin from '../main.ts';
 
 function makePlugin(vault: any){
   const plugin: any = new (ArchiverPlugin as any)({ vault });

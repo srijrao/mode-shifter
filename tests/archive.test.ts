@@ -49,4 +49,13 @@ describe('archive module', () => {
     const copies = Array.from(base.files.keys()).filter(k => k.startsWith('x/a-conflict-') && k.endsWith('.txt'));
     expect(copies.length).toBe(1);
   });
+
+  it('uses provided base name for archive when preserveBaseName is true and slugifies it', async () => {
+    const { vault, files } = makeFakeVault({ 'Group One/a.txt': 'A' });
+    const app: any = { vault };
+    const res = await createArchive(app, '.', 'Archive', 'Group One', ['Group One/a.txt'], { preserveBaseName: true });
+  // Allow optional milliseconds and Z in the ISO string we transform with dashes
+  expect(res.zipPath).toMatch(/^Archive\/Group-One-\d{4}-\d{2}-\d{2}T?\d{2}-\d{2}-\d{2}(?:-\d+Z)?-[a-z0-9]{6}\.zip$/i);
+    expect(files.has(res.zipPath)).toBe(true);
+  });
 });

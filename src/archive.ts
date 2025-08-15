@@ -202,7 +202,12 @@ export async function createArchive(app: App, vaultPath: string, archiveFolder: 
       const uniq = Array.from(new Set(tops));
       if (uniq.length === 1 && uniq[0]) baseName = uniq[0];
     }
-    const zipName = `${baseName}-${ts}-${hash}.zip`;
+    // Slugify the base name slightly for safer filenames and better matching (spaces/underscores -> hyphens)
+    const safeBaseName = String(baseName)
+      .replace(/[\s_]+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    const zipName = `${safeBaseName}-${ts}-${hash}.zip`;
     const zipPath = `${archiveFolder}/${zipName}`;
 
     // Ensure the archive folder exists. createFolder will reject if a parent doesn't exist,
@@ -260,6 +265,7 @@ async function deleteOriginalsWithRollback(app: App, zipPath: string, files: str
   const perFileTimeoutMs = opts?.perFileTimeoutMs || 30000;
   const batchSize = opts?.batchSize || 10; // Process files in batches to avoid long operations
   const deleted: string[] = []; // global list of files deleted so far
+  const failed: string[] = []; // files we could not delete despite retries
   const deleteBatches: string[][] = [];
 
   // Split files into batches for incremental processing.
@@ -271,27 +277,69 @@ async function deleteOriginalsWithRollback(app: App, zipPath: string, files: str
     // Process each batch sequentially so we can checkpoint progress between batches.
     for (let batchIndex = 0; batchIndex < deleteBatches.length; batchIndex++) {
       const batch = deleteBatches[batchIndex];
-      const batchDeleted: string[] = [];
+  const batchDeleted: string[] = [];
 
       try {
         for (const p of batch) {
+          let success = false;
           // Prefer the high-level vault API so Obsidian updates internal caches and plugins correctly.
           const af = app.vault.getAbstractFileByPath(p) as any;
           if (af) {
-            // Delete via vault.delete. This is the 'right' way in the Obsidian plugin environment.
-            await withTimeout(app.vault.delete(af), perFileTimeoutMs, `Deleting ${p} timed out`);
+            try {
+              await withTimeout(app.vault.delete(af), perFileTimeoutMs, `Deleting ${p} timed out`);
+              success = true;
+            } catch (e) {
+              // Fall through to adapter-based strategies
+            }
+          }
+          if (!success) {
+            // Try adapter.remove with retries on transient Windows errors (EPERM/EACCES/EBUSY/ENOTEMPTY)
+            const tryRemove = async () => {
+              const maxAttempts = 5;
+              let attempt = 0;
+              let lastErr: any = undefined;
+              while (attempt < maxAttempts) {
+                try {
+                  await withTimeout((app.vault.adapter as any).remove(p), perFileTimeoutMs, `Adapter remove ${p} timed out`);
+                  return true;
+                } catch (err) {
+                  const msg = String((err as any)?.message || err).toLowerCase();
+                  lastErr = err;
+                  if (msg.includes('eperm') || msg.includes('eacces') || msg.includes('ebusy') || msg.includes('enotempty') || msg.includes('permission denied')) {
+                    // backoff then retry
+                    await new Promise(r => setTimeout(r, 200 + attempt * 150));
+                    attempt++;
+                    continue;
+                  }
+                  // Non-retryable
+                  break;
+                }
+              }
+              // Attempt a rename-then-remove as a last resort where adapters support rename
+              try {
+                const tmp = p + '.deleting-' + Math.random().toString(36).slice(2,8);
+                if (typeof (app.vault.adapter as any).rename === 'function') {
+                  await (app.vault.adapter as any).rename(p, tmp);
+                  await (app.vault.adapter as any).remove(tmp);
+                  return true;
+                }
+              } catch {}
+              // Give up
+              if (lastErr) throw lastErr;
+              return false;
+            };
+            try {
+              success = await tryRemove();
+            } catch {
+              success = false;
+            }
+          }
+
+          if (success) {
             batchDeleted.push(p);
             deleted.push(p);
           } else {
-            // If we couldn't find an abstract file (maybe it's already gone), attempt to remove using the adapter.
-            try {
-              await withTimeout((app.vault.adapter as any).remove(p), perFileTimeoutMs, `Adapter remove ${p} timed out`);
-              batchDeleted.push(p);
-              deleted.push(p);
-            } catch (e) {
-              // If adapter remove fails (for example, file missing), skip it quietly.
-              // We don't want to fail the entire deletion for a single missing file.
-            }
+            failed.push(p);
           }
         }
 
@@ -328,7 +376,7 @@ async function deleteOriginalsWithRollback(app: App, zipPath: string, files: str
     }
 
     // If all batches completed successfully, write a final deletelog summarizing deletions.
-    const deletemeta = { deleted, timestamp: new Date().toISOString() };
+  const deletemeta = { deleted, failed, timestamp: new Date().toISOString() };
     const logPath = `${zipPath}.deletelog.json`;
     await withTimeout(Promise.resolve().then(()=>app.vault.adapter.write(logPath, JSON.stringify(deletemeta, null, 2))), perFileTimeoutMs, 'Writing deletelog timed out');
 

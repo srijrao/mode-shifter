@@ -10,7 +10,7 @@ vi.mock('obsidian', () => ({
 let ArchiverPlugin: any;
 beforeAll(async () => {
   // Import the TypeScript source so Vitest can apply the obsidian alias mock
-  ArchiverPlugin = (await import('../main')).default as any;
+  ArchiverPlugin = (await import('../main.ts')).default as any;
 });
 
 describe('deleteFolderSafely', () => {
