@@ -146,7 +146,8 @@ export type CreateArchiveOptions = {
   overallTimeoutMs?: number,    // maximum allowed time for the entire archive operation (ms)
   onProgress?: (done:number,total:number)=>void, // optional progress callback
   deleteOriginals?: boolean,    // if true, original files will be deleted after successful verification
-  batchSize?: number            // when deleting originals, how many files to delete per batch
+  batchSize?: number,           // when deleting originals, how many files to delete per batch
+  preserveBaseName?: boolean    // if true, do not override the provided modeName when naming the zip
 };
 
 // createArchive:
@@ -195,7 +196,8 @@ export async function createArchive(app: App, vaultPath: string, archiveFolder: 
     const hash = Math.random().toString(36).slice(2,8);
     // If all files come from a single top-level folder, use that folder name to make the filename meaningful.
     let baseName = modeName;
-    if (files.length > 0) {
+    // Only override the base name when not explicitly preserved and all files share one top-level folder
+    if (!options?.preserveBaseName && files.length > 0) {
       const tops = files.map(f => f.split('/')[0]);
       const uniq = Array.from(new Set(tops));
       if (uniq.length === 1 && uniq[0]) baseName = uniq[0];

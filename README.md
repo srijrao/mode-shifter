@@ -1,64 +1,170 @@
 # Mode Shifter
 
-A simple Obsidian plugin for zipping and unzipping folders in your vault. Archive folders to save space and restore them when needed.
+A powerful Obsidian plugin for archiving and managing folders in your vault. Create zip archives of folders, organize them with flexible storage options, and restore them with advanced conflict resolution.
 
 ## ✨ Features
 
 ### 🎯 Core Functionality
-- **Folder Zipping**: Select any folder in your vault and create a zip archive
-- **Easy Restoration**: Restore the most recent archive with a single command
-- **Safe Operations**: Archives are verified before any operations
-- **Flexible Restore Policies**: Choose how to handle conflicts (overwrite, skip, or create conflict copies)
+- **Folder Archiving**: Select any folder in your vault and create a zip archive
+- **Flexible Archive Storage**: Store archives in a central folder OR alongside source folders
+- **Group Operations**: Create and manage folder groups for batch archiving
+- **Smart Restoration**: Restore archives with advanced conflict resolution policies
+- **Vault-wide Archive Discovery**: Find and restore archives from anywhere in your vault
 
-### 🔧 Simple Workflow
-1. Use "Zip a folder" command to select and archive any folder
-2. Folder contents are preserved in a timestamped zip file
-3. Use "Restore Last Archive" to extract the most recent archive
-4. Configure restore behavior in plugin settings
+### 🔧 Enhanced Workflow
+1. **Single Folder**: Use "Zip a folder" command to archive individual folders
+2. **Folder Groups**: Create named groups of folders for batch operations
+3. **Flexible Storage**: Choose between centralized archive storage or in-place archiving
+4. **Easy Restoration**: Restore the most recent archive or select from all available archives
+5. **Robust Deletion**: Advanced folder deletion with multiple fallback strategies
 
 ### 🛡️ Safety & Reliability
-- **Zip Verification**: Validates archives before operations
-- **Batched Operations**: Processes files efficiently  
-- **Conflict Resolution**: Handle existing files during restoration
+- **Enhanced Deletion**: Multi-tier fallback system for reliable folder removal
+- **Zip Verification**: Validates archives before any operations
+- **Permission Handling**: Robust error handling with detailed user guidance
+- **Conflict Resolution**: Handle existing files during restoration with multiple policies
+- **Atomic Operations**: Safe file handling with rollback on errors
 
 ### 🎨 User Interface
-- **Settings Panel**: Simple configuration interface
-- **Folder Selection**: Visual folder picker modal
-- **Progress Feedback**: Real-time notifications during operations
+- **Tree-style Folder Selection**: Hierarchical folder picker with expand/collapse
+- **Comprehensive Settings Panel**: Full configuration control
+- **Archive Discovery**: Visual archive selection from entire vault
+- **Real-time Feedback**: Progress notifications and detailed error messages
 
 ## 🚀 Installation
 
-1. Copy the plugin folder to your vault's `.obsidian/plugins/folder-archiver` directory
+1. Copy the plugin folder to your vault's `.obsidian/plugins/mode-shifter` directory
 2. In Obsidian, go to Settings → Community plugins → Turn off Safe Mode
-3. Enable the "Folder Archiver" plugin
+3. Enable the "Mode Shifter" plugin
 
 ## 📖 Usage
 
-### Zipping a Folder
+### Individual Folder Archiving
 
 1. Use Command Palette (Ctrl/Cmd + P) and search for "Zip a folder"
-2. Select the folder you want to archive from the picker
-3. The folder will be compressed into a timestamped zip file in your archive folder
+2. Select the folder you want to archive from the tree-style picker
+3. The folder will be compressed into a timestamped zip file
+4. Archive location depends on your "Archive in place" setting
 
-### Restoring an Archive
+### Group Folder Operations
 
-1. Use Command Palette and search for "Restore Last Archive"
-2. The most recent archive will be extracted back to your vault
-3. Choose your preferred restore policy in settings:
-   - **Overwrite**: Replace existing files
-   - **Skip**: Leave existing files untouched  
-   - **Conflict Copy**: Create copies with conflict suffixes
+1. **Create Groups**: Go to plugin settings and create folder groups
+2. **Add Folders**: Use the tree-view interface to select folders at any depth
+3. **Batch Archive**: Use "Zip Group: [Group Name]" commands for group operations
+4. **Batch Restore**: Use "Unzip Group: [Group Name]" commands to restore groups
+
+### Archive Restoration
+
+1. **Latest Archive**: Use "Restore Last Archive" to restore the most recent archive
+2. **Select Archive**: Use "Unzip Archive" to choose from all available archives
+3. **Vault-wide Search**: Archives are discovered from anywhere in your vault
+4. **Conflict Handling**: Choose your preferred restore policy in settings
+
+### Advanced Features
+
+- **Tree Folder Selection**: Navigate and select folders using hierarchical tree view
+- **Flexible Storage**: Toggle "Archive in place" to store archives with source folders
+- **Enhanced Deletion**: Robust folder removal with multiple fallback strategies
+- **Smart Discovery**: Find archives anywhere in vault, not just archive folder
 
 ## ⚙️ Settings
 
-- **Archive Folder**: Where zip files are stored (default: "Archive")
-- **Restore Policy**: How to handle file conflicts during restoration
+### Archive Configuration
+- **Archive Folder**: Where zip files are stored when "Archive in place" is disabled (default: "Archive")
+- **Archive in Place**: Toggle to store archives alongside source folders instead of central folder
+- **Delete Original Folder**: Automatically remove source folders after successful archiving
+- **Delete Archive After Restore**: Automatically remove archives after successful restoration
+
+### Restore Policies
+- **Overwrite**: Replace existing files during restoration
+- **Skip**: Leave existing files untouched during restoration
+- **Conflict Copy**: Create copies with conflict suffixes for existing files
+
+### Folder Groups
+- **Create Groups**: Organize multiple folders into named groups for batch operations
+- **Tree Selection**: Use hierarchical folder picker to select folders at any depth
+- **Group Commands**: Dedicated zip/unzip commands for each group
+- **Flexible Organization**: Groups can contain folders from anywhere in vault
+
+## 🆕 Recent Enhancements (v2.0)
+
+### Enhanced Folder Deletion
+- **Multi-tier Fallbacks**: Advanced deletion system with 3 fallback strategies
+- **Permission Handling**: Robust error handling for permission-denied scenarios
+- **User Guidance**: Detailed error messages with actionable advice
+
+### Flexible Archive Storage
+- **Archive in Place**: New option to store archives with source folders
+- **Vault-wide Discovery**: Find archives anywhere in vault, not just archive folder
+- **Smart Location Logic**: Intelligent archive placement based on user preference
+
+### Advanced Folder Selection
+- **Tree View Interface**: Hierarchical folder display with expand/collapse
+- **Nested Selection**: Select folders at any depth in vault structure
+- **Visual Hierarchy**: Indented display with tooltips showing full paths
+
+### Usability and Discovery
+- **Larger Selection Modals**: Increased modal width and list height for both folder and archive pickers
+- **Better Archive Discovery**: Scans entire vault and ignores plugin directories for unzip selection
 ## 🔧 Technical Details
 
-- Uses `jszip` for compression/decompression
-- Atomic operations with verification
-- Timeout protection for operations
-- Safe file handling with rollback on errors
+- **Enhanced Deletion**: Multi-tier folder deletion with adapter-level fallbacks
+- **Archive Discovery**: Vault-wide recursive archive search with metadata caching
+- **Tree Rendering**: Dynamic hierarchical folder display with lazy loading
+- **JSZip Integration**: Robust compression/decompression with verification
+- **Atomic Operations**: Safe file handling with comprehensive rollback on errors
+- **Timeout Protection**: Configurable timeouts for long-running operations
+- **Cross-platform Compatibility**: Handles path separators and file system differences
+
+## 🧪 Development
+
+### Prerequisites
+- Node.js and npm
+- TypeScript
+- Obsidian development environment
+
+### Setup
+```powershell
+npm install --legacy-peer-deps
+```
+
+### Development Commands
+```powershell
+# Build plugin
+npm run build
+
+# Development mode (watch)
+npm run dev
+
+# Type checking
+npm run check
+```
+
+### Architecture Notes
+- **Plugin Class**: Main plugin with command registration and settings management
+- **Archive Module**: Core archiving functionality with JSZip integration
+- **Modal Classes**: Tree-style folder selection and archive selection interfaces
+- **Settings Tab**: Comprehensive configuration interface with real-time updates
+
+## 🚨 Breaking Changes in v2.0
+
+- **Settings Migration**: New `archiveInPlace` setting added (defaults to `false` for backward compatibility)
+- **Archive Discovery**: Commands now search entire vault instead of just archive folder
+- **Enhanced Error Handling**: More detailed error messages may appear different from v1.x
+
+## 📋 Changelog
+
+### Version 2.0.0 (August 15, 2025)
+- ✅ **Fixed**: Enhanced folder deletion with multi-tier fallback strategies
+- ✅ **Added**: Configurable archive storage location (in-place vs centralized)
+- ✅ **Enhanced**: Tree-view folder selection with nested folder support
+- ✅ **Improved**: Vault-wide archive discovery and management
+- ✅ **Enhanced**: Error handling with detailed user guidance
+
+### Version 1.x
+- Basic folder archiving and restoration
+- Simple folder selection interface
+- Centralized archive storage only
 
 ## 🧪 Development
 
@@ -80,10 +186,26 @@ npm run build
 npm run dev
 ```
 
-##  License
+## 📝 License
 
 MIT License - see LICENSE file for details.
 
 ## 🙏 Acknowledgments
 
-Built for the Obsidian community with focus on simplicity and data safety.
+Built for the Obsidian community with focus on reliability, flexibility, and user experience. Special thanks to the community for feedback that led to the v2.0 enhancements.
+
+## 🐛 Support & Issues
+
+If you encounter any issues:
+1. Check the plugin settings for configuration options
+2. Look for detailed error messages in notifications
+3. For permission errors, try the enhanced deletion fallbacks
+4. Report persistent issues with your vault structure details
+
+## 🔮 Future Roadmap
+
+- **Archive Compression Levels**: Configurable compression settings
+- **Batch Archive Management**: Multi-select archive operations
+- **Archive Metadata**: Enhanced archive information and search
+- **Import/Export Groups**: Share folder group configurations
+- **Scheduled Archiving**: Automatic archiving based on rules

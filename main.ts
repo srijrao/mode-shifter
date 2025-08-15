@@ -12,6 +12,7 @@ interface FolderGroup {
 // Simplified settings interface
 interface ArchiverSettings {
 	archiveFolder: string;
+	archiveInPlace: boolean;
 	restorePolicy: RestorePolicy;
 	deleteOriginalFolder: boolean;
 	deleteArchiveAfterRestore: boolean;
@@ -21,6 +22,7 @@ interface ArchiverSettings {
 // Default settings
 const DEFAULT_SETTINGS: ArchiverSettings = {
 	archiveFolder: 'Archive',
+	archiveInPlace: false,
 	restorePolicy: 'overwrite',
 	deleteOriginalFolder: false,
 	deleteArchiveAfterRestore: true,
@@ -42,7 +44,8 @@ export default class ArchiverPlugin extends Plugin {
 					if (!folder) return;
 
 					const vaultBase = getVaultBasePath(this.app);
-					
+
+					// Default: zip the entire selected folder
 					const filesToZip: string[] = [];
 					const addFilesRecursively = async (dir: TFolder) => {
 						for (const child of dir.children) {
@@ -53,28 +56,21 @@ export default class ArchiverPlugin extends Plugin {
 							}
 						}
 					};
-					
 					await addFilesRecursively(folder);
-
 					if (filesToZip.length === 0) {
 						new Notice('Selected folder is empty. Nothing to zip.');
 						return;
 					}
-
 					try {
-						const res = await createArchive(this.app, vaultBase, this.settings.archiveFolder, folder.name, filesToZip, { 
+						const archiveLocation = this.settings.archiveInPlace 
+							? folder.parent?.path || '' 
+							: this.settings.archiveFolder;
+						const res = await createArchive(this.app, vaultBase, archiveLocation, folder.name, filesToZip, { 
 							deleteOriginals: this.settings.deleteOriginalFolder 
 						});
 						new Notice(`Archive created: ${res.zipPath}`);
-						
-						// If we deleted the original folder, also delete the folder itself
 						if (this.settings.deleteOriginalFolder) {
-							try {
-								await this.app.vault.delete(folder);
-								new Notice(`Original folder '${folder.name}' deleted`);
-							} catch (e: any) {
-								new Notice(`Warning: Could not delete original folder: ${e.message}`);
-							}
+							await this.deleteFolderSafely(folder);
 						}
 					} catch (e: any) {
 						new Notice('Archive failed: ' + (e && e.message));
@@ -87,28 +83,31 @@ export default class ArchiverPlugin extends Plugin {
 			id: 'archiver-restore-last',
 			name: 'Restore Last Archive',
 			callback: async () => {
-				const folder = this.settings.archiveFolder;
 				try {
-					const children = await this.app.vault.adapter.list(folder);
-					const files = (children.files || []).filter((f: string) => f.endsWith('.zip'));
-					if (!files.length) { new Notice('No archives found in ' + folder); return; }
-					files.sort();
-					const latest = files[files.length - 1];
+					const archives = await this.findAllArchives();
+					if (!archives.length) { 
+						new Notice('No archives found'); 
+						return; 
+					}
 					
-					await restoreArchive(this.app, latest, { policy: this.settings.restorePolicy });
-					new Notice(`Restored ${latest} using ${this.settings.restorePolicy} policy`);
+					// Sort by modification time (most recent first)
+					archives.sort((a, b) => b.mtime - a.mtime);
+					const latest = archives[0];
+					
+					await restoreArchive(this.app, latest.path, { policy: this.settings.restorePolicy });
+					new Notice(`Restored ${latest.path} using ${this.settings.restorePolicy} policy`);
 					
 					// Delete archive after successful restoration if setting is enabled
 					if (this.settings.deleteArchiveAfterRestore) {
 						try {
-							await this.app.vault.adapter.remove(latest);
-							new Notice(`Archive ${latest} deleted after restoration`);
+							await this.app.vault.adapter.remove(latest.path);
+							new Notice(`Archive ${latest.path} deleted after restoration`);
 							
 							// Also clean up related files (manifest, logs, etc.)
 							const relatedFiles = [
-								`${latest}.manifest.json`,
-								`${latest}.checkpoint.json`,
-								`${latest}.deletelog.json`
+								`${latest.path}.manifest.json`,
+								`${latest.path}.checkpoint.json`,
+								`${latest.path}.deletelog.json`
 							];
 							
 							for (const file of relatedFiles) {
@@ -132,33 +131,32 @@ export default class ArchiverPlugin extends Plugin {
 			id: 'unzip-archive',
 			name: 'Unzip Archive',
 			callback: async () => {
-				const folder = this.settings.archiveFolder;
 				try {
-					const children = await this.app.vault.adapter.list(folder);
-					const files = (children.files || []).filter((f: string) => f.endsWith('.zip'));
+					const archives = await this.findAllArchives();
 					
-					if (!files.length) { 
-						new Notice('No archives found in ' + folder); 
+					if (!archives.length) { 
+						new Notice('No archives found in vault'); 
 						return; 
 					}
 					
-					if (files.length === 1) {
+					if (archives.length === 1) {
 						// If only one archive, restore it directly
-						const archive = files[0];
-						await restoreArchive(this.app, archive, { policy: this.settings.restorePolicy });
-						new Notice(`Restored ${archive} using ${this.settings.restorePolicy} policy`);
+						const archive = archives[0];
+						await restoreArchive(this.app, archive.path, { policy: this.settings.restorePolicy });
+						new Notice(`Restored ${archive.path} using ${this.settings.restorePolicy} policy`);
 						
 						if (this.settings.deleteArchiveAfterRestore) {
 							try {
-								await this.app.vault.adapter.remove(archive);
-								new Notice(`Archive ${archive} deleted after restoration`);
+								await this.app.vault.adapter.remove(archive.path);
+								new Notice(`Archive ${archive.path} deleted after restoration`);
 							} catch (e: any) {
 								new Notice(`Warning: Could not delete archive: ${e.message}`);
 							}
 						}
 					} else {
 						// Multiple archives, show selection modal
-						new ArchiveSelectModal(this.app, files, async (selectedArchive) => {
+						const archivePaths = archives.map(a => a.path);
+						new ArchiveSelectModal(this.app, archivePaths, async (selectedArchive) => {
 							if (!selectedArchive) return;
 							
 							await restoreArchive(this.app, selectedArchive, { policy: this.settings.restorePolicy });
@@ -211,48 +209,39 @@ export default class ArchiverPlugin extends Plugin {
 
 	async zipFolderGroup(group: FolderGroup) {
 		const vaultBase = getVaultBasePath(this.app);
+
+		// Default behavior: one archive containing all files from the group folders
 		const filesToZip: string[] = [];
-		
-		// Collect all files from group folders
 		for (const folderPath of group.folders) {
 			const folder = this.app.vault.getAbstractFileByPath(folderPath);
 			if (folder instanceof TFolder) {
 				const addFilesRecursively = async (dir: TFolder) => {
 					for (const child of dir.children) {
-						if (child instanceof TFolder) {
-							await addFilesRecursively(child);
-						} else {
-							filesToZip.push(child.path);
-						}
+						if (child instanceof TFolder) await addFilesRecursively(child);
+						else filesToZip.push(child.path);
 					}
 				};
 				await addFilesRecursively(folder);
 			}
 		}
-
 		if (filesToZip.length === 0) {
 			new Notice(`Group '${group.name}' contains no files to zip.`);
 			return;
 		}
-
 		try {
-			const res = await createArchive(this.app, vaultBase, this.settings.archiveFolder, group.name, filesToZip, { 
+			let archiveLocation = this.settings.archiveFolder;
+			if (this.settings.archiveInPlace && group.folders.length > 0) {
+				const firstFolder = this.app.vault.getAbstractFileByPath(group.folders[0]);
+				if (firstFolder instanceof TFolder) archiveLocation = firstFolder.parent?.path || '';
+			}
+			const res = await createArchive(this.app, vaultBase, archiveLocation, group.name, filesToZip, { 
 				deleteOriginals: this.settings.deleteOriginalFolder 
 			});
 			new Notice(`Group archive created: ${res.zipPath}`);
-			
-			// If we deleted original files and setting is enabled, also delete the folders
 			if (this.settings.deleteOriginalFolder) {
 				for (const folderPath of group.folders) {
 					const folder = this.app.vault.getAbstractFileByPath(folderPath);
-					if (folder instanceof TFolder) {
-						try {
-							await this.app.vault.delete(folder);
-							new Notice(`Original folder '${folderPath}' deleted`);
-						} catch (e: any) {
-							new Notice(`Warning: Could not delete folder ${folderPath}: ${e.message}`);
-						}
-					}
+					if (folder instanceof TFolder) await this.deleteFolderSafely(folder);
 				}
 			}
 		} catch (e: any) {
@@ -262,35 +251,36 @@ export default class ArchiverPlugin extends Plugin {
 
 	async unzipFolderGroup(group: FolderGroup) {
 		// Look for archives that might belong to this group
-		const folder = this.settings.archiveFolder;
 		try {
-			const children = await this.app.vault.adapter.list(folder);
-			const files = (children.files || []).filter((f: string) => 
-				f.endsWith('.zip') && f.includes(group.name.toLowerCase().replace(/\s+/g, '-'))
+			const allArchives = await this.findAllArchives();
+			const groupName = group.name.toLowerCase().replace(/\s+/g, '-');
+			const matchingArchives = allArchives.filter(archive => 
+				archive.path.toLowerCase().includes(groupName)
 			);
 			
-			if (!files.length) {
+			if (!matchingArchives.length) {
 				new Notice(`No archives found for group '${group.name}'`);
 				return;
 			}
 			
 			// If only one archive found, restore it directly
-			if (files.length === 1) {
-				const archive = files[0];
-				await restoreArchive(this.app, archive, { policy: this.settings.restorePolicy });
-				new Notice(`Restored group archive: ${archive}`);
+			if (matchingArchives.length === 1) {
+				const archive = matchingArchives[0];
+				await restoreArchive(this.app, archive.path, { policy: this.settings.restorePolicy });
+				new Notice(`Restored group archive: ${archive.path}`);
 				
 				if (this.settings.deleteArchiveAfterRestore) {
 					try {
-						await this.app.vault.adapter.remove(archive);
-						new Notice(`Archive ${archive} deleted after restoration`);
+						await this.app.vault.adapter.remove(archive.path);
+						new Notice(`Archive ${archive.path} deleted after restoration`);
 					} catch (e: any) {
 						new Notice(`Warning: Could not delete archive: ${e.message}`);
 					}
 				}
 			} else {
 				// Multiple archives, show selection modal
-				new ArchiveSelectModal(this.app, files, async (selectedArchive: string) => {
+				const archivePaths = matchingArchives.map(a => a.path);
+				new ArchiveSelectModal(this.app, archivePaths, async (selectedArchive: string) => {
 					if (!selectedArchive) return;
 					
 					await restoreArchive(this.app, selectedArchive, { policy: this.settings.restorePolicy });
@@ -308,6 +298,103 @@ export default class ArchiverPlugin extends Plugin {
 			}
 		} catch (e: any) {
 			new Notice(`Group unzip failed: ${e && e.message}`);
+		}
+	}
+
+	// Helper method to find all archives in vault (both in archive folder and in-place)
+	async findAllArchives(): Promise<Array<{path: string, mtime: number}>> {
+		const archives: Array<{path: string, mtime: number}> = [];
+		const all = this.app.vault.getAllLoadedFiles();
+		for (const af of all) {
+			if (af.path.startsWith('.obsidian/plugins/')) continue;
+			if (af.path.toLowerCase().endsWith('.zip')) {
+				try {
+					const st = await this.app.vault.adapter.stat(af.path);
+					archives.push({ path: af.path, mtime: st?.mtime || 0 });
+				} catch {
+					archives.push({ path: af.path, mtime: 0 });
+				}
+			}
+		}
+		return archives;
+	}
+
+	// Enhanced folder deletion with multiple fallback strategies
+	async deleteFolderSafely(folder: TFolder): Promise<boolean> {
+		const folderName = folder.name;
+		const folderPath = folder.path;
+		
+		try {
+			// First attempt: Standard vault.delete
+			await this.app.vault.delete(folder);
+			new Notice(`Original folder '${folderName}' deleted`);
+			return true;
+		} catch (e: any) {
+			console.warn(`Standard delete failed for ${folderPath}:`, e.message);
+			
+			try {
+				// Second attempt: Use adapter directly (recursive)
+				await this.app.vault.adapter.rmdir(folderPath, true);
+				new Notice(`Original folder '${folderName}' deleted (using adapter)`);
+				return true;
+			} catch (e2: any) {
+				console.warn(`Adapter delete failed for ${folderPath}:`, e2.message);
+				
+				try {
+					// Third attempt: Delete contents first, then folder with retry for EPERM/EACCES/EBUSY
+					await this.deleteContentsRecursively(folder);
+					for (let attempt = 0; attempt < 3; attempt++) {
+						try {
+							await this.app.vault.adapter.rmdir(folderPath, false);
+							new Notice(`Original folder '${folderName}' deleted (contents cleared first)`);
+							return true;
+						} catch (e3a: any) {
+							const msg = String(e3a?.message || e3a);
+							if (msg.includes('EPERM') || msg.includes('EACCES') || msg.includes('EBUSY')) {
+								await new Promise(r => setTimeout(r, 200));
+								continue;
+							}
+							throw e3a;
+						}
+					}
+					throw new Error('Folder removal failed after retries');
+				} catch (e3: any) {
+					console.error(`All deletion attempts failed for ${folderPath}:`, e3.message);
+					new Notice(`Warning: Could not delete folder '${folderName}'. You may need to delete it manually. Error: ${e.message}`);
+					return false;
+				}
+			}
+		}
+	}
+
+	// Helper method to delete folder contents recursively
+	async deleteContentsRecursively(folder: TFolder): Promise<void> {
+		// Delete all files first
+		for (const child of folder.children) {
+			if (!(child instanceof TFolder)) {
+				try {
+					await this.app.vault.delete(child);
+				} catch (e) {
+					// Try adapter delete for files
+					try {
+						await this.app.vault.adapter.remove(child.path);
+					} catch (e2) {
+						console.warn(`Could not delete file ${child.path}:`, e2);
+					}
+				}
+			}
+		}
+		
+		// Then delete subfolders recursively
+		for (const child of folder.children) {
+			if (child instanceof TFolder) {
+				await this.deleteContentsRecursively(child);
+				try {
+					await this.app.vault.adapter.rmdir(child.path, false);
+				} catch (e) {
+					console.warn(`Could not delete subfolder ${child.path}:`, e);
+				}
+			}
 		}
 	}
 
@@ -337,12 +424,22 @@ class ArchiverSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Archive folder')
-			.setDesc('Folder inside vault where archives (zip) are stored')
+			.setDesc('Folder inside vault where archives (zip) are stored when "Archive in place" is disabled')
 			.addText(text => text
 				.setPlaceholder('Archive')
 				.setValue(this.plugin.settings.archiveFolder)
 				.onChange(async (value) => {
 					this.plugin.settings.archiveFolder = value.trim() || DEFAULT_SETTINGS.archiveFolder;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Archive in place')
+			.setDesc('When enabled, archives are created in the same location as the source folder instead of the archive folder')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.archiveInPlace)
+				.onChange(async (value) => {
+					this.plugin.settings.archiveInPlace = value;
 					await this.plugin.saveSettings();
 				}));
 
@@ -378,6 +475,7 @@ class ArchiverSettingTab extends PluginSettingTab {
 					this.plugin.settings.deleteArchiveAfterRestore = value;
 					await this.plugin.saveSettings();
 				}));
+
 
 		// Folder Groups Section
 		containerEl.createEl('h3', { text: 'Folder Groups' });
@@ -461,20 +559,25 @@ class FolderSelectModal extends Modal {
     onOpen() {
         const { contentEl } = this;
         contentEl.createEl('h2', { text: 'Select a folder to zip' });
+		// Enlarge modal dimensions for better visibility
+		try {
+			(this as any).modalEl?.style?.setProperty('width', '720px');
+			(this as any).modalEl?.style?.setProperty('max-height', '70vh');
+			(this as any).modalEl?.style?.setProperty('min-height', '320px');
+		} catch {}
 
         const folders = this.app.vault.getAllLoadedFiles().filter(f => f instanceof TFolder && f.path !== '/');
 
         const listEl = contentEl.createDiv();
         listEl.addClass('suggestion-container');
         
-        // Calculate dynamic height based on content
-        const itemHeight = 40; // Approximate height per item including padding
-        const maxVisibleItems = 12; // Show up to 12 items without scrolling
-        const minHeight = Math.min(folders.length * itemHeight, 200); // Minimum 200px
-        const maxHeight = Math.min(folders.length * itemHeight, maxVisibleItems * itemHeight);
-        
-        listEl.style.height = `${Math.max(minHeight, maxHeight)}px`;
-        listEl.style.overflowY = folders.length > maxVisibleItems ? 'auto' : 'hidden';
+	// Larger list area
+	const itemHeight = 36;
+	const maxVisibleItems = 18;
+	const minHeight = Math.min(folders.length * itemHeight, 320);
+	const maxHeight = Math.min(folders.length * itemHeight, maxVisibleItems * itemHeight);
+	listEl.style.height = `${Math.max(minHeight, maxHeight)}px`;
+	listEl.style.overflowY = 'auto';
 
 
         folders.forEach(folder => {
@@ -518,18 +621,23 @@ class ArchiveSelectModal extends Modal {
     onOpen() {
         const { contentEl } = this;
         contentEl.createEl('h2', { text: 'Select an archive to restore' });
+		// Enlarge modal dimensions for better visibility
+		try {
+			(this as any).modalEl?.style?.setProperty('width', '720px');
+			(this as any).modalEl?.style?.setProperty('max-height', '70vh');
+			(this as any).modalEl?.style?.setProperty('min-height', '320px');
+		} catch {}
 
         const listEl = contentEl.createDiv();
         listEl.addClass('suggestion-container');
         
-        // Calculate dynamic height based on content
-        const itemHeight = 50; // Slightly taller for archive info
-        const maxVisibleItems = 10;
-        const minHeight = Math.min(this.archives.length * itemHeight, 200);
-        const maxHeight = Math.min(this.archives.length * itemHeight, maxVisibleItems * itemHeight);
-        
-        listEl.style.height = `${Math.max(minHeight, maxHeight)}px`;
-        listEl.style.overflowY = this.archives.length > maxVisibleItems ? 'auto' : 'hidden';
+	// Larger list area
+	const itemHeight = 44;
+	const maxVisibleItems = 18;
+	const minHeight = Math.min(this.archives.length * itemHeight, 320);
+	const maxHeight = Math.min(this.archives.length * itemHeight, maxVisibleItems * itemHeight);
+	listEl.style.height = `${Math.max(minHeight, maxHeight)}px`;
+	listEl.style.overflowY = 'auto';
 
         this.archives.forEach(archive => {
             const archiveEl = listEl.createEl('div');
@@ -610,45 +718,25 @@ class FolderGroupModal extends Modal {
                     .setValue(this.group?.description || '');
             });
 
-        // Folder selection
-        contentEl.createEl('h3', { text: 'Select Folders' });
-        
-        const foldersContainer = contentEl.createDiv();
-        foldersContainer.style.maxHeight = '300px';
-        foldersContainer.style.overflowY = 'auto';
-        foldersContainer.style.border = '1px solid var(--background-modifier-border)';
-        foldersContainer.style.borderRadius = '4px';
-        foldersContainer.style.padding = '8px';
-        foldersContainer.style.marginBottom = '16px';
+		// Folder selection
+		contentEl.createEl('h3', { text: 'Select Folders' });
+		
+		const foldersContainer = contentEl.createDiv();
+		foldersContainer.style.maxHeight = '400px';
+		foldersContainer.style.overflowY = 'auto';
+		foldersContainer.style.border = '1px solid var(--background-modifier-border)';
+		foldersContainer.style.borderRadius = '4px';
+		foldersContainer.style.padding = '8px';
+		foldersContainer.style.marginBottom = '16px';
 
-        const folders = this.app.vault.getAllLoadedFiles()
-            .filter(f => f instanceof TFolder && f.path !== '/')
-            .map(f => f.path);
+		// Get all folders and organize them in a tree structure
+		const allFolders = this.app.vault.getAllLoadedFiles()
+			.filter(f => f instanceof TFolder && f.path !== '/')
+			.map(f => f.path)
+			.sort();
 
-        folders.forEach(folderPath => {
-            const folderItem = foldersContainer.createDiv();
-            folderItem.style.display = 'flex';
-            folderItem.style.alignItems = 'center';
-            folderItem.style.padding = '4px 0';
-
-            const checkbox = folderItem.createEl('input', { type: 'checkbox' });
-            checkbox.checked = this.selectedFolders.includes(folderPath);
-            checkbox.style.marginRight = '8px';
-
-            const label = folderItem.createEl('label', { text: folderPath });
-            label.style.cursor = 'pointer';
-
-            label.addEventListener('click', () => {
-                checkbox.checked = !checkbox.checked;
-                this.updateSelectedFolders(folderPath, checkbox.checked);
-            });
-
-            checkbox.addEventListener('change', () => {
-                this.updateSelectedFolders(folderPath, checkbox.checked);
-            });
-        });
-
-        // Selected folders display
+		// Create tree structure
+		this.createFolderTree(foldersContainer, allFolders);        // Selected folders display
         const selectedContainer = contentEl.createDiv();
         selectedContainer.createEl('h4', { text: 'Selected Folders:' });
         const selectedList = selectedContainer.createEl('div');
@@ -696,6 +784,98 @@ class FolderGroupModal extends Modal {
 
             this.onSave(group);
             this.close();
+        });
+    }
+
+    createFolderTree(container: HTMLElement, folders: string[]) {
+        // Organize folders into a tree structure
+        const tree: {[key: string]: any} = {};
+        
+        folders.forEach(folderPath => {
+            const parts = folderPath.split('/');
+            let current = tree;
+            let currentPath = '';
+            
+            parts.forEach((part, index) => {
+                currentPath = currentPath ? `${currentPath}/${part}` : part;
+                
+                if (!current[part]) {
+                    current[part] = {
+                        children: {},
+                        depth: index,
+                        fullPath: currentPath
+                    };
+                }
+                current = current[part].children;
+            });
+        });
+        
+        // Render the tree
+        this.renderTreeNode(container, tree, 0);
+    }
+    
+    renderTreeNode(container: HTMLElement, node: any, depth: number) {
+        Object.keys(node).sort().forEach(key => {
+            const item = node[key];
+            const fullPath = item.fullPath;
+            
+            const folderItem = container.createDiv();
+            folderItem.style.display = 'flex';
+            folderItem.style.alignItems = 'center';
+            folderItem.style.padding = '4px 0';
+            folderItem.style.paddingLeft = `${depth * 20 + 8}px`;
+            
+            // Add expand/collapse button if has children
+            const hasChildren = Object.keys(item.children).length > 0;
+            if (hasChildren) {
+                const expandButton = folderItem.createEl('span', { text: '▶' });
+                expandButton.style.cursor = 'pointer';
+                expandButton.style.marginRight = '4px';
+                expandButton.style.fontSize = '12px';
+                expandButton.style.transition = 'transform 0.2s';
+                expandButton.style.display = 'inline-block';
+                expandButton.style.width = '12px';
+                
+                const childrenContainer = container.createDiv();
+                childrenContainer.style.display = 'none';
+                
+                let expanded = false;
+                expandButton.addEventListener('click', () => {
+                    expanded = !expanded;
+                    childrenContainer.style.display = expanded ? 'block' : 'none';
+                    expandButton.style.transform = expanded ? 'rotate(90deg)' : 'rotate(0deg)';
+                    
+                    if (expanded && childrenContainer.children.length === 0) {
+                        this.renderTreeNode(childrenContainer, item.children, depth + 1);
+                    }
+                });
+            } else {
+                // Spacer for alignment
+                const spacer = folderItem.createEl('span', { text: ' ' });
+                spacer.style.width = '16px';
+                spacer.style.display = 'inline-block';
+            }
+
+            const checkbox = folderItem.createEl('input', { type: 'checkbox' });
+            checkbox.checked = this.selectedFolders.includes(fullPath);
+            checkbox.style.marginRight = '8px';
+
+            const label = folderItem.createEl('label', { text: key });
+            label.style.cursor = 'pointer';
+            label.style.fontFamily = 'var(--font-monospace)';
+            label.style.fontSize = '0.9em';
+
+            // Add full path as tooltip
+            label.title = fullPath;
+
+            label.addEventListener('click', () => {
+                checkbox.checked = !checkbox.checked;
+                this.updateSelectedFolders(fullPath, checkbox.checked);
+            });
+
+            checkbox.addEventListener('change', () => {
+                this.updateSelectedFolders(fullPath, checkbox.checked);
+            });
         });
     }
 
