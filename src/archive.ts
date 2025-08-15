@@ -2,10 +2,6 @@
 // JSZip provides a convenient API to add files, generate binary blobs, and read entries.
 const JSZip = require('jszip');
 
-// fast-glob (fg) is a fast and flexible library to expand glob patterns
-// into lists of matching file paths. We run it relative to the vault root.
-const fg = require('fast-glob');
-
 // Obsidian's App type gives us access to the vault and adapter APIs.
 // We only import the type here so TypeScript can check signatures; at runtime
 // the real `app` instance is provided by the caller/plugin environment.
@@ -34,29 +30,6 @@ export interface ZipVerificationResult {
   isValid: boolean;
   fileCount: number;
   errors: string[];
-}
-
-// Expand globs relative to vault root
-// - vaultPath: base directory used by fast-glob
-// - patterns: array of glob patterns (e.g. ["**/*.md"])
-// Returns a list of matching file paths in POSIX style (forward slashes).
-// expandGlobs: given a base folder (vaultPath) and an array of glob patterns
-// (for example ["**/*.md"]), return a deduplicated list of matching file paths.
-// The returned paths use POSIX-style forward slashes so they work consistently
-// across platforms. This helper keeps the calling code independent of the
-// underlying glob implementation.
-export async function expandGlobs(vaultPath: string, patterns: string[]): Promise<string[]> {
-  if (!patterns || patterns.length === 0) return [];
-  // fast-glob options explained for beginners:
-  // - cwd: run patterns relative to the provided vaultPath (so globs like "notes/**/*.md" are resolved under vaultPath)
-  // - dot: include files that start with a dot (hidden files)
-  // - onlyFiles: return only file paths, not directories
-  // - unique: remove duplicate matches
-  const opts = { cwd: vaultPath, dot: true, onlyFiles: true, unique: true } as any;
-  const entries = await fg(patterns, opts);
-  // fast-glob usually returns POSIX-style paths already. On Windows some adapters
-  // or callers might use backslashes, so normalize to forward slashes.
-  return entries.map((p: string) => p.replace(/\\/g, '/'));
 }
 
 // normalizePath: helper to produce a canonical relative path string
