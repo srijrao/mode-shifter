@@ -323,84 +323,154 @@ export default class ArchiverPlugin extends Plugin {
 		return archives;
 	}
 
-	// Enhanced folder deletion with multiple fallback strategies
-	async deleteFolderSafely(folder: TFolder): Promise<boolean> {
-		const folderName = folder.name;
-		const folderPath = folder.path;
-		
-		try {
-			// First attempt: Standard vault.delete
-			await this.app.vault.delete(folder);
-			new Notice(`Original folder '${folderName}' deleted`);
-			return true;
-		} catch (e: any) {
-			console.warn(`Standard delete failed for ${folderPath}:`, e.message);
-			
+	// Enhanced folder deletion with multiple fallback strategies (implemented below)
+
+	// Helper method: centralized, robust folder deletion that works across platforms
+	private isRetryableFsError(err: any): boolean {
+		const msg = String(err?.message || err || '').toLowerCase();
+		const code = String((err && (err.code || err.errno)) || '').toLowerCase();
+		return (
+			msg.includes('eperm') ||
+			msg.includes('eacces') ||
+			msg.includes('ebusy') ||
+			msg.includes('enotempty') ||
+			msg.includes('permission denied') ||
+			msg.includes('resource busy') ||
+			msg.includes('directory not empty') ||
+			code === 'eperm' || code === 'eacces' || code === 'ebusy' || code === 'enotempty'
+		);
+	}
+
+	private async delay(ms: number) { return new Promise(r => setTimeout(r, ms)); }
+
+	private async removeDirWithRetries(path: string, recursive: boolean, attempts = 5): Promise<boolean> {
+		for (let i = 0; i < attempts; i++) {
 			try {
-				// Second attempt: Use adapter directly (recursive)
-				await this.app.vault.adapter.rmdir(folderPath, true);
-				new Notice(`Original folder '${folderName}' deleted (using adapter)`);
+				await this.app.vault.adapter.rmdir(path, recursive);
 				return true;
-			} catch (e2: any) {
-				console.warn(`Adapter delete failed for ${folderPath}:`, e2.message);
-				
-				try {
-					// Third attempt: Delete contents first, then folder with retry for EPERM/EACCES/EBUSY/ENOTEMPTY
-					await this.deleteContentsRecursively(folder);
-					for (let attempt = 0; attempt < 5; attempt++) {
-						try {
-							await this.app.vault.adapter.rmdir(folderPath, false);
-							new Notice(`Original folder '${folderName}' deleted (contents cleared first)`);
-							return true;
-						} catch (e3a: any) {
-							const msg = String(e3a?.message || e3a);
-							if (msg.includes('EPERM') || msg.includes('EACCES') || msg.includes('EBUSY') || msg.includes('ENOTEMPTY') || msg.toLowerCase().includes('directory not empty') || msg.toLowerCase().includes('permission denied')) {
-								// Exponential-ish backoff
-								await new Promise(r => setTimeout(r, 200 + attempt * 150));
-								continue;
-							}
-							throw e3a;
-						}
-					}
-					throw new Error('Folder removal failed after retries');
-				} catch (e3: any) {
-					console.error(`All deletion attempts failed for ${folderPath}:`, e3.message);
-					new Notice(`Warning: Could not delete folder '${folderName}'. You may need to delete it manually. Error: ${e.message}`);
-					return false;
-				}
+			} catch (err) {
+				if (!ArchiverPlugin.prototype.isRetryableFsError.call(this, err) || i === attempts - 1) return false;
+				await ArchiverPlugin.prototype.delay.call(this, 200 + i * 150);
 			}
+		}
+		return false;
+	}
+
+	private async renameThenRemoveDir(path: string): Promise<boolean> {
+		const adapter: any = this.app.vault.adapter as any;
+		if (typeof adapter.rename !== 'function') return false;
+		const tmp = `${path}.deleting-${Math.random().toString(36).slice(2,8)}`;
+		try {
+			await adapter.rename(path, tmp);
+			// Try recursive removal on the renamed path with retries
+			if (await ArchiverPlugin.prototype.removeDirWithRetries.call(this, tmp, true, 5)) return true;
+			// As a fallback, deep-remove contents and rmdir non-recursive
+			await ArchiverPlugin.prototype.deleteContentsRecursivelyByPath.call(this, tmp);
+			if (await ArchiverPlugin.prototype.removeDirWithRetries.call(this, tmp, false, 5)) return true;
+			// Final fallback: move the renamed folder into vault trash
+			if (await ArchiverPlugin.prototype.moveToVaultTrash.call(this, tmp)) return true;
+			return false;
+		} catch {
+			return false;
 		}
 	}
 
-	// Helper method to delete folder contents recursively
+	private async moveToVaultTrash(path: string): Promise<boolean> {
+		const adapter: any = this.app.vault.adapter as any;
+		const TRASH_DIR = '.trash';
+		try {
+			// Ensure .trash exists at vault root
+			await this.app.vault.createFolder(TRASH_DIR).catch(() => {});
+			const base = path.split('/').pop() || 'item';
+			const dest = `${TRASH_DIR}/${base}-deleted-${Math.random().toString(36).slice(2,8)}`;
+			await adapter.rename(path, dest);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	private async deleteContentsRecursivelyByPath(dirPath: string): Promise<void> {
+		// Use adapter.list to avoid stale in-memory folder trees and to work cross-platform
+		const adapter: any = this.app.vault.adapter as any;
+		let listing: { files: string[]; folders: string[] } | null = null;
+		try {
+			listing = await adapter.list(dirPath);
+		} catch (e) {
+			// If listing fails (e.g., path already gone), nothing to do
+			return;
+		}
+		if (!listing) return;
+		// Delete files first
+		for (const file of listing.files || []) {
+			for (let i = 0; i < 5; i++) {
+				try {
+					await adapter.remove(file);
+					break;
+				} catch (err) {
+					if (!ArchiverPlugin.prototype.isRetryableFsError.call(this, err) || i === 4) break;
+					await ArchiverPlugin.prototype.delay.call(this, 150 + i * 100);
+				}
+			}
+		}
+		// Recurse into subfolders
+		for (const sub of listing.folders || []) {
+			await ArchiverPlugin.prototype.deleteContentsRecursivelyByPath.call(this, sub);
+			await ArchiverPlugin.prototype.removeDirWithRetries.call(this, sub, false, 5);
+		}
+	}
+
+	// Backwards-compatible helper to preserve existing tests that stub this method
 	async deleteContentsRecursively(folder: TFolder): Promise<void> {
-		// Delete all files first
-		for (const child of folder.children) {
-			if (!(child instanceof TFolder)) {
-				try {
-					await this.app.vault.delete(child);
-				} catch (e) {
-					// Try adapter delete for files
-					try {
-						await this.app.vault.adapter.remove(child.path);
-					} catch (e2) {
-						console.warn(`Could not delete file ${child.path}:`, e2);
-					}
-				}
+		await this.deleteContentsRecursivelyByPath(folder.path);
+	}
+
+	// Re-implemented deleteFolderSafely using the helpers above for cross-platform robustness
+	async deleteFolderSafely(folder: TFolder): Promise<boolean> {
+		const folderName = folder.name;
+		const folderPath = folder.path;
+		// 1) Try high-level API (updates Obsidian state) with a couple of quick retries
+		for (let i = 0; i < 3; i++) {
+			try {
+				await this.app.vault.delete(folder);
+				new Notice(`Original folder '${folderName}' deleted`);
+				return true;
+			} catch (e) {
+				if (!ArchiverPlugin.prototype.isRetryableFsError.call(this, e) || i === 2) break;
+				await ArchiverPlugin.prototype.delay.call(this, 150 + i * 150);
 			}
 		}
-		
-		// Then delete subfolders recursively
-		for (const child of folder.children) {
-			if (child instanceof TFolder) {
-				await this.deleteContentsRecursively(child);
-				try {
-					await this.app.vault.adapter.rmdir(child.path, false);
-				} catch (e) {
-					console.warn(`Could not delete subfolder ${child.path}:`, e);
-				}
-			}
+
+		// 2) Adapter recursive delete with retries
+		if (await ArchiverPlugin.prototype.removeDirWithRetries.call(this, folderPath, true, 5)) {
+			new Notice(`Original folder '${folderName}' deleted (using adapter)`);
+			return true;
 		}
+
+		// 3) Delete contents first + non-recursive rmdir with retries
+		try {
+			await ArchiverPlugin.prototype.deleteContentsRecursivelyByPath.call(this, folderPath);
+			if (await ArchiverPlugin.prototype.removeDirWithRetries.call(this, folderPath, false, 5)) {
+				new Notice(`Original folder '${folderName}' deleted (contents cleared first)`);
+				return true;
+			}
+		} catch {}
+
+		// 4) Rename then remove as last resort (helps on Windows and macOS when watchers hold locks)
+		if (await ArchiverPlugin.prototype.renameThenRemoveDir.call(this, folderPath)) {
+			new Notice(`Original folder '${folderName}' deleted (after rename)`);
+			return true;
+		}
+
+		// 5) Move to vault trash as a final fallback (lets sync tools finish gracefully)
+		if (await ArchiverPlugin.prototype.moveToVaultTrash.call(this, folderPath)) {
+			new Notice(`Original folder '${folderName}' moved to vault trash (.trash/)`);
+			return true;
+		}
+
+		console.error(`All deletion attempts failed for ${folderPath}`);
+		new Notice(`Warning: Could not delete or move folder '${folderName}'. You may need to delete it manually.`);
+		return false;
 	}
 
 	onunload() { }
