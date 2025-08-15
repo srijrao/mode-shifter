@@ -12,6 +12,7 @@
     "allowJs": true,
     "noImplicitAny": true,
     "moduleResolution": "node",
+    "noEmit": true,
     "importHelpers": true,
     "isolatedModules": true,
     "strictNullChecks": true,
@@ -24,5 +25,8 @@
   },
   "include": [
     "**/*.ts"
+  ],
+  "exclude": [
+    "tests"
   ]
 }

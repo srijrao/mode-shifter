@@ -341,17 +341,18 @@ export default class ArchiverPlugin extends Plugin {
 				console.warn(`Adapter delete failed for ${folderPath}:`, e2.message);
 				
 				try {
-					// Third attempt: Delete contents first, then folder with retry for EPERM/EACCES/EBUSY
+					// Third attempt: Delete contents first, then folder with retry for EPERM/EACCES/EBUSY/ENOTEMPTY
 					await this.deleteContentsRecursively(folder);
-					for (let attempt = 0; attempt < 3; attempt++) {
+					for (let attempt = 0; attempt < 5; attempt++) {
 						try {
 							await this.app.vault.adapter.rmdir(folderPath, false);
 							new Notice(`Original folder '${folderName}' deleted (contents cleared first)`);
 							return true;
 						} catch (e3a: any) {
 							const msg = String(e3a?.message || e3a);
-							if (msg.includes('EPERM') || msg.includes('EACCES') || msg.includes('EBUSY')) {
-								await new Promise(r => setTimeout(r, 200));
+							if (msg.includes('EPERM') || msg.includes('EACCES') || msg.includes('EBUSY') || msg.includes('ENOTEMPTY') || msg.toLowerCase().includes('directory not empty') || msg.toLowerCase().includes('permission denied')) {
+								// Exponential-ish backoff
+								await new Promise(r => setTimeout(r, 200 + attempt * 150));
 								continue;
 							}
 							throw e3a;
