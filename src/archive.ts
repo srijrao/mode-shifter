@@ -6,6 +6,7 @@ const JSZip = require('jszip');
 // We only import the type here so TypeScript can check signatures; at runtime
 // the real `app` instance is provided by the caller/plugin environment.
 import { App } from 'obsidian';
+import { CancellationToken } from './progress-modal';
 
 // ArchiveResult: describes the result of creating an archive.
 // zipPath: path in the vault where the zip file was written.
@@ -147,7 +148,8 @@ export type CreateArchiveOptions = {
   onProgress?: (done:number,total:number)=>void, // optional progress callback
   deleteOriginals?: boolean,    // if true, original files will be deleted after successful verification
   batchSize?: number,           // when deleting originals, how many files to delete per batch
-  preserveBaseName?: boolean    // if true, do not override the provided modeName when naming the zip
+  preserveBaseName?: boolean,   // if true, do not override the provided modeName when naming the zip
+  cancellationToken?: CancellationToken // optional cancellation token for aborting operations
 };
 
 // createArchive:
@@ -163,7 +165,7 @@ export type CreateArchiveOptions = {
 // 4. Verify the zip contents can be read back.
 // 5. Optionally delete original files with safe rollback semantics.
 export async function createArchive(app: App, vaultPath: string, archiveFolder: string, modeName: string, files: string[], options?: CreateArchiveOptions): Promise<ArchiveResult> {
-  const { perFileTimeoutMs = 30000, overallTimeoutMs = 10 * 60 * 1000, onProgress } = options || {};
+  const { perFileTimeoutMs = 30000, overallTimeoutMs = 10 * 60 * 1000, onProgress, cancellationToken } = options || {};
 
   // Wrap the main archive creation logic so we can apply a single overall timeout later.
   const mainPromise = (async () => {
@@ -177,6 +179,9 @@ export async function createArchive(app: App, vaultPath: string, archiveFolder: 
     // Read each file from the vault and add it to the zip. We use the relative
     // path as the entry name so folder structure is preserved in the archive.
     for (const relPath of files) {
+      // Check for cancellation before processing each file
+      cancellationToken?.throwIfCancelled();
+      
       // read each file using the vault adapter, with a per-file timeout to avoid hangs.
       const data = await withTimeout(app.vault.adapter.readBinary(relPath), perFileTimeoutMs, `Reading ${relPath} timed out`);
       // Add file contents to zip using the relative path as the entry name.
@@ -459,8 +464,8 @@ export type RestorePolicy = 'overwrite' | 'skip' | 'conflict-copy';
 // - overwrite: replace files
 // - skip: leave existing files untouched
 // - conflict-copy: write a new file next to the existing one with a '-conflict-<hash>' suffix
-export async function restoreArchive(app: App, zipPath: string, options?: { perFileTimeoutMs?: number, overallTimeoutMs?: number, onProgress?: (done:number,total:number)=>void, policy?: RestorePolicy }): Promise<void> {
-  const { perFileTimeoutMs = 30000, policy = 'overwrite' } = options || {};
+export async function restoreArchive(app: App, zipPath: string, options?: { perFileTimeoutMs?: number, overallTimeoutMs?: number, onProgress?: (done:number,total:number)=>void, policy?: RestorePolicy, cancellationToken?: CancellationToken }): Promise<void> {
+  const { perFileTimeoutMs = 30000, policy = 'overwrite', cancellationToken } = options || {};
   const main = (async () => {
     // Read zip binary and load using JSZip.
     const data = await withTimeout(app.vault.adapter.readBinary(zipPath), perFileTimeoutMs * 2, 'Reading zip timed out');
@@ -473,6 +478,9 @@ export async function restoreArchive(app: App, zipPath: string, options?: { perF
     const total = entries.length;
 
     for (const entry of entries) {
+      // Check for cancellation before processing each file
+      cancellationToken?.throwIfCancelled();
+      
       const file = zip.file(entry);
       if (!file) { done++; continue; }
 

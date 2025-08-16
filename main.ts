@@ -1,6 +1,7 @@
-import { App, Plugin, PluginSettingTab, Setting, Notice, Modal, TFolder, TAbstractFile } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, Notice, Modal, TFolder, TAbstractFile, TFile } from 'obsidian';
 import { getVaultBasePath } from './src/utils';
 import { createArchive, restoreArchive, RestorePolicy } from './src/archive';
+import { ProgressModal, CancellationToken } from './src/progress-modal';
 
 // Folder group interface
 interface FolderGroup {
@@ -17,6 +18,8 @@ interface ArchiverSettings {
 	deleteOriginalFolder: boolean;
 	deleteArchiveAfterRestore: boolean;
 	folderGroups: FolderGroup[];
+	allowFallbackDeletion: boolean;
+	autoCleanupOrphanedFiles: boolean;
 }
 
 // Default settings
@@ -26,15 +29,389 @@ const DEFAULT_SETTINGS: ArchiverSettings = {
 	restorePolicy: 'overwrite',
 	deleteOriginalFolder: false,
 	deleteArchiveAfterRestore: true,
-	folderGroups: []
+	folderGroups: [],
+	allowFallbackDeletion: false,
+	autoCleanupOrphanedFiles: false
 };
 
 // Main plugin class
 export default class ArchiverPlugin extends Plugin {
 	settings: ArchiverSettings;
 
+	// Context menu integration
+	addFileMenuItems(menu: any, file: TAbstractFile, source: string) {
+		// Only show menu items in file explorer
+		if (source !== 'file-explorer') return;
+
+		if (file instanceof TFolder) {
+			// Add "Zip Folder" option for folders
+			menu.addItem((item: any) => {
+				item
+					.setTitle('📦 Zip Folder')
+					.setIcon('package')
+					.onClick(async () => {
+						await this.zipFolderFromContext(file);
+					});
+			});
+		} else if (file instanceof TFile && (file.extension === 'zip' || file.extension === '7z')) {
+			// Add "Unzip Archive" option for archive files
+			menu.addItem((item: any) => {
+				item
+					.setTitle('📂 Unzip Archive')
+					.setIcon('folder-open')
+					.onClick(async () => {
+						await this.unzipArchiveFromContext(file);
+					});
+			});
+		}
+	}
+
+	addFilesMenuItems(menu: any, files: TAbstractFile[], source: string) {
+		// Only show menu items in file explorer
+		if (source !== 'file-explorer') return;
+
+		// Check if all selected files are folders
+		const allFolders = files.every(file => file instanceof TFolder);
+		const allArchives = files.every(file => 
+			file instanceof TFile && (file.extension === 'zip' || file.extension === '7z')
+		);
+
+		if (allFolders && files.length > 1) {
+			// Add "Zip Selected Folders" option
+			menu.addItem((item: any) => {
+				item
+					.setTitle(`📦 Zip ${files.length} Folders`)
+					.setIcon('package')
+					.onClick(async () => {
+						await this.zipMultipleFoldersFromContext(files as TFolder[]);
+					});
+			});
+		} else if (allArchives && files.length > 1) {
+			// Add "Unzip Selected Archives" option
+			menu.addItem((item: any) => {
+				item
+					.setTitle(`📂 Unzip ${files.length} Archives`)
+					.setIcon('folder-open')
+					.onClick(async () => {
+						await this.unzipMultipleArchivesFromContext(files);
+					});
+			});
+		}
+	}
+
+	async zipFolderFromContext(folder: TFolder) {
+		const vaultBase = getVaultBasePath(this.app);
+
+		// Collect files to zip
+		const filesToZip: string[] = [];
+		const addFilesRecursively = async (dir: TFolder) => {
+			for (const child of dir.children) {
+				if (child instanceof TFolder) {
+					await addFilesRecursively(child);
+				} else {
+					filesToZip.push(child.path);
+				}
+			}
+		};
+		await addFilesRecursively(folder);
+
+		if (filesToZip.length === 0) {
+			new Notice('Selected folder is empty. Nothing to zip.');
+			return;
+		}
+
+		// Create progress modal and cancellation token
+		const cancellationToken = new CancellationToken();
+		const progressModal = new ProgressModal(this.app, {
+			title: `Zipping folder: ${folder.name}`,
+			showCancel: true,
+			onCancel: () => cancellationToken.cancel()
+		});
+		progressModal.open();
+
+		try {
+			const archiveLocation = this.settings.archiveInPlace 
+				? folder.parent?.path || '' 
+				: this.settings.archiveFolder;
+			
+			const res = await createArchive(this.app, vaultBase, archiveLocation, folder.name, filesToZip, { 
+				deleteOriginals: this.settings.deleteOriginalFolder,
+				preserveBaseName: true,
+				onProgress: (current, total) => {
+					progressModal.updateProgress(current, total, `Processing file ${current} of ${total}`);
+				},
+				cancellationToken
+			});
+
+			progressModal.setComplete(`Archive created: ${res.zipPath}`);
+			new Notice(`Archive created: ${res.zipPath}`);
+			
+			if (this.settings.deleteOriginalFolder) {
+				await this.deleteFolderSafely(folder);
+			}
+		} catch (e: any) {
+			if (cancellationToken.isCancelled) {
+				progressModal.setError('Operation was cancelled');
+				new Notice('Archive operation cancelled');
+			} else {
+				progressModal.setError(e.message || 'Unknown error');
+				new Notice('Archive failed: ' + (e && e.message));
+			}
+		}
+	}
+
+	async unzipArchiveFromContext(file: TAbstractFile) {
+		// Create progress modal and cancellation token
+		const cancellationToken = new CancellationToken();
+		const progressModal = new ProgressModal(this.app, {
+			title: `Unzipping archive: ${file.name}`,
+			showCancel: true,
+			onCancel: () => cancellationToken.cancel()
+		});
+		progressModal.open();
+
+		try {
+			await restoreArchive(this.app, file.path, { 
+				policy: this.settings.restorePolicy,
+				onProgress: (current, total) => {
+					progressModal.updateProgress(current, total, `Restoring file ${current} of ${total}`);
+				},
+				cancellationToken
+			});
+			
+			progressModal.setComplete(`Archive unzipped: ${file.name}`);
+			new Notice(`Archive unzipped: ${file.name}`);
+			
+			if (this.settings.deleteArchiveAfterRestore) {
+				try {
+					await this.app.vault.adapter.remove(file.path);
+					new Notice(`Archive ${file.path} deleted after restoration`);
+				} catch (e: any) {
+					new Notice(`Warning: Could not delete archive: ${e.message}`);
+				}
+			}
+		} catch (e: any) {
+			if (cancellationToken.isCancelled) {
+				progressModal.setError('Operation was cancelled');
+				new Notice('Unzip operation cancelled');
+			} else {
+				progressModal.setError(e.message || 'Unknown error');
+				new Notice('Unzip failed: ' + (e && e.message));
+			}
+		}
+	}
+
+	async zipMultipleFoldersFromContext(folders: TFolder[]) {
+		const vaultBase = getVaultBasePath(this.app);
+
+		// Collect all files from all folders
+		const filesToZip: string[] = [];
+		const addFilesRecursively = async (dir: TFolder) => {
+			for (const child of dir.children) {
+				if (child instanceof TFolder) {
+					await addFilesRecursively(child);
+				} else {
+					filesToZip.push(child.path);
+				}
+			}
+		};
+		
+		for (const folder of folders) {
+			await addFilesRecursively(folder);
+		}
+
+		if (filesToZip.length === 0) {
+			new Notice('Selected folders are empty. Nothing to zip.');
+			return;
+		}
+
+		// Create progress modal and cancellation token
+		const cancellationToken = new CancellationToken();
+		const progressModal = new ProgressModal(this.app, {
+			title: `Zipping ${folders.length} folders`,
+			showCancel: true,
+			onCancel: () => cancellationToken.cancel()
+		});
+		progressModal.open();
+
+		try {
+			const folderNames = folders.map(f => f.name).join('-');
+			const archiveLocation = this.settings.archiveInPlace 
+				? folders[0].parent?.path || '' 
+				: this.settings.archiveFolder;
+			
+			const res = await createArchive(this.app, vaultBase, archiveLocation, folderNames, filesToZip, { 
+				deleteOriginals: this.settings.deleteOriginalFolder,
+				preserveBaseName: true,
+				onProgress: (current, total) => {
+					progressModal.updateProgress(current, total, `Processing file ${current} of ${total}`);
+				},
+				cancellationToken
+			});
+
+			progressModal.setComplete(`Archive created: ${res.zipPath}`);
+			new Notice(`Archive created: ${res.zipPath}`);
+			
+			if (this.settings.deleteOriginalFolder) {
+				for (const folder of folders) {
+					await this.deleteFolderSafely(folder);
+				}
+			}
+		} catch (e: any) {
+			if (cancellationToken.isCancelled) {
+				progressModal.setError('Operation was cancelled');
+				new Notice('Archive operation cancelled');
+			} else {
+				progressModal.setError(e.message || 'Unknown error');
+				new Notice('Archive failed: ' + (e && e.message));
+			}
+		}
+	}
+
+	async unzipMultipleArchivesFromContext(files: TAbstractFile[]) {
+		// Create progress modal
+		const progressModal = new ProgressModal(this.app, {
+			title: `Unzipping ${files.length} archives`,
+			showCancel: false // Too complex to cancel mid-way through multiple files
+		});
+		progressModal.open();
+
+		let completed = 0;
+		const total = files.length;
+
+		for (const file of files) {
+			try {
+				progressModal.updateProgress(completed, total, `Unzipping ${file.name}...`);
+				
+				await restoreArchive(this.app, file.path, { 
+					policy: this.settings.restorePolicy
+				});
+				
+				if (this.settings.deleteArchiveAfterRestore) {
+					try {
+						await this.app.vault.adapter.remove(file.path);
+					} catch (e: any) {
+						new Notice(`Warning: Could not delete archive ${file.path}: ${e.message}`);
+					}
+				}
+				
+				completed++;
+			} catch (e: any) {
+				new Notice(`Failed to unzip ${file.name}: ${e.message}`);
+				completed++;
+			}
+		}
+
+		progressModal.setComplete(`Completed unzipping ${completed} of ${total} archives`);
+		new Notice(`Unzipped ${completed} of ${total} archives`);
+	}
+
+	async cleanupOrphanedFiles(showProgress: boolean = true): Promise<void> {
+		const orphanedFiles: string[] = [];
+		
+		// Progress modal for manual cleanup
+		let progressModal: ProgressModal | undefined;
+		if (showProgress) {
+			progressModal = new ProgressModal(this.app, {
+				title: 'Cleaning up orphaned files',
+				showCancel: false
+			});
+			progressModal.open();
+			progressModal.updateProgress(0, 1, 'Scanning for orphaned files...');
+		}
+
+		try {
+			// Get all files in the vault
+			const allFiles = this.app.vault.getAllLoadedFiles();
+			const adapter = this.app.vault.adapter;
+
+			// Find orphaned temporary files
+			for (const file of allFiles) {
+				if (!(file instanceof TFile)) continue;
+				
+				const filePath = file.path;
+				
+				// Check for various temporary file patterns
+				if (filePath.endsWith('.checkpoint.json') || 
+					filePath.endsWith('.deletelog.json') ||
+					filePath.endsWith('.manifest.json')) {
+					
+					// Extract the archive path by removing the suffix
+					let archivePath = filePath;
+					if (filePath.endsWith('.checkpoint.json')) {
+						archivePath = filePath.replace('.checkpoint.json', '');
+					} else if (filePath.endsWith('.deletelog.json')) {
+						archivePath = filePath.replace('.deletelog.json', '');
+					} else if (filePath.endsWith('.manifest.json')) {
+						archivePath = filePath.replace('.manifest.json', '');
+					}
+					
+					// Check if the corresponding archive exists
+					try {
+						await adapter.stat(archivePath);
+						// Archive exists, so temp file is not orphaned
+					} catch (e) {
+						// Archive doesn't exist, so temp file is orphaned
+						orphanedFiles.push(filePath);
+					}
+				}
+			}
+
+			if (orphanedFiles.length === 0) {
+				if (showProgress) {
+					progressModal!.setComplete('No orphaned files found');
+					new Notice('No orphaned temporary files found');
+				}
+				return;
+			}
+
+			// Delete orphaned files
+			let deleted = 0;
+			const total = orphanedFiles.length;
+
+			for (const filePath of orphanedFiles) {
+				try {
+					if (showProgress) {
+						progressModal!.updateProgress(deleted, total, `Deleting ${filePath}...`);
+					}
+					
+					await adapter.remove(filePath);
+					deleted++;
+				} catch (e: any) {
+					console.error(`Failed to delete orphaned file ${filePath}:`, e);
+				}
+			}
+
+			if (showProgress) {
+				progressModal!.setComplete(`Cleaned up ${deleted} of ${total} orphaned files`);
+				new Notice(`Cleaned up ${deleted} of ${total} orphaned temporary files`);
+			} else if (deleted > 0) {
+				new Notice(`Auto-cleanup: Removed ${deleted} orphaned temporary files`);
+			}
+
+		} catch (e: any) {
+			if (showProgress) {
+				progressModal?.setError(`Cleanup failed: ${e.message}`);
+				new Notice(`Cleanup failed: ${e.message}`);
+			}
+		}
+	}
+
 	async onload() {
 		await this.loadSettings();
+
+		// Register context menus for file explorer
+		this.registerEvent(
+			this.app.workspace.on('file-menu', (menu, file, source) => {
+				this.addFileMenuItems(menu, file, source);
+			})
+		);
+
+		this.registerEvent(
+			this.app.workspace.on('files-menu', (menu, files, source) => {
+				this.addFilesMenuItems(menu, files, source);
+			})
+		);
 
 		this.addCommand({
 			id: 'zip-folder',
@@ -61,20 +438,44 @@ export default class ArchiverPlugin extends Plugin {
 						new Notice('Selected folder is empty. Nothing to zip.');
 						return;
 					}
+
+					// Create progress modal and cancellation token
+					const cancellationToken = new CancellationToken();
+					const progressModal = new ProgressModal(this.app, {
+						title: `Zipping folder: ${folder.name}`,
+						showCancel: true,
+						onCancel: () => cancellationToken.cancel()
+					});
+					progressModal.open();
+
 					try {
 						const archiveLocation = this.settings.archiveInPlace 
 							? folder.parent?.path || '' 
 							: this.settings.archiveFolder;
+						
 						const res = await createArchive(this.app, vaultBase, archiveLocation, folder.name, filesToZip, { 
-								deleteOriginals: this.settings.deleteOriginalFolder,
-								preserveBaseName: true // ensure folder.name is used for archive filename base
-							});
+							deleteOriginals: this.settings.deleteOriginalFolder,
+							preserveBaseName: true, // ensure folder.name is used for archive filename base
+							onProgress: (current, total) => {
+								progressModal.updateProgress(current, total, `Processing file ${current} of ${total}`);
+							},
+							cancellationToken
+						});
+
+						progressModal.setComplete(`Archive created: ${res.zipPath}`);
 						new Notice(`Archive created: ${res.zipPath}`);
+						
 						if (this.settings.deleteOriginalFolder) {
 							await this.deleteFolderSafely(folder);
 						}
 					} catch (e: any) {
-						new Notice('Archive failed: ' + (e && e.message));
+						if (cancellationToken.isCancelled) {
+							progressModal.setError('Operation was cancelled');
+							new Notice('Archive operation cancelled');
+						} else {
+							progressModal.setError(e.message || 'Unknown error');
+							new Notice('Archive failed: ' + (e && e.message));
+						}
 					}
 				}).open();
 			}
@@ -84,6 +485,9 @@ export default class ArchiverPlugin extends Plugin {
 			id: 'archiver-restore-last',
 			name: 'Restore Last Archive',
 			callback: async () => {
+				let cancellationToken: CancellationToken | undefined;
+				let progressModal: ProgressModal | undefined;
+				
 				try {
 					const archives = await this.findAllArchives();
 					if (!archives.length) { 
@@ -95,7 +499,24 @@ export default class ArchiverPlugin extends Plugin {
 					archives.sort((a, b) => b.mtime - a.mtime);
 					const latest = archives[0];
 					
-					await restoreArchive(this.app, latest.path, { policy: this.settings.restorePolicy });
+					// Create progress modal and cancellation token
+					cancellationToken = new CancellationToken();
+					progressModal = new ProgressModal(this.app, {
+						title: `Restoring archive: ${latest.path}`,
+						showCancel: true,
+						onCancel: () => cancellationToken!.cancel()
+					});
+					progressModal.open();
+
+					await restoreArchive(this.app, latest.path, { 
+						policy: this.settings.restorePolicy,
+						onProgress: (current, total) => {
+							progressModal!.updateProgress(current, total, `Restoring file ${current} of ${total}`);
+						},
+						cancellationToken
+					});
+					
+					progressModal.setComplete(`Restored ${latest.path} using ${this.settings.restorePolicy} policy`);
 					new Notice(`Restored ${latest.path} using ${this.settings.restorePolicy} policy`);
 					
 					// Delete archive after successful restoration if setting is enabled
@@ -123,7 +544,13 @@ export default class ArchiverPlugin extends Plugin {
 						}
 					}
 				} catch (e: any) {
-					new Notice('Restore failed: ' + (e && e.message));
+					if (cancellationToken?.isCancelled) {
+						progressModal?.setError('Operation was cancelled');
+						new Notice('Restore operation cancelled');
+					} else {
+						progressModal?.setError(e.message || 'Unknown error');
+						new Notice('Restore failed: ' + (e && e.message));
+					}
 				}
 			}
 		});
@@ -179,10 +606,27 @@ export default class ArchiverPlugin extends Plugin {
 			}
 		});
 
+		// Add cleanup command
+		this.addCommand({
+			id: 'cleanup-orphaned-files',
+			name: 'Clean up orphaned temporary files',
+			callback: async () => {
+				await this.cleanupOrphanedFiles(true);
+			}
+		});
+
 		this.addSettingTab(new ArchiverSettingTab(this.app, this));
 		
 		// Register folder group commands dynamically
 		this.registerFolderGroupCommands();
+
+		// Auto-cleanup on load if setting is enabled
+		if (this.settings.autoCleanupOrphanedFiles) {
+			// Run cleanup in background after a short delay
+			setTimeout(() => {
+				this.cleanupOrphanedFiles(false);
+			}, 2000);
+		}
 	}
 
 	registerFolderGroupCommands() {
@@ -456,20 +900,23 @@ export default class ArchiverPlugin extends Plugin {
 			}
 		} catch {}
 
-		// 4) Rename then remove as last resort (helps on Windows and macOS when watchers hold locks)
-		if (await ArchiverPlugin.prototype.renameThenRemoveDir.call(this, folderPath)) {
-			new Notice(`Original folder '${folderName}' deleted (after rename)`);
-			return true;
-		}
+		// 4 & 5) Fallback methods (rename/move to trash) - only if setting allows
+		if (this.settings.allowFallbackDeletion) {
+			// 4) Rename then remove as last resort (helps on Windows and macOS when watchers hold locks)
+			if (await ArchiverPlugin.prototype.renameThenRemoveDir.call(this, folderPath)) {
+				new Notice(`Original folder '${folderName}' deleted (after rename)`);
+				return true;
+			}
 
-		// 5) Move to vault trash as a final fallback (lets sync tools finish gracefully)
-		if (await ArchiverPlugin.prototype.moveToVaultTrash.call(this, folderPath)) {
-			new Notice(`Original folder '${folderName}' moved to vault trash (.trash/)`);
-			return true;
+			// 5) Move to vault trash as a final fallback (lets sync tools finish gracefully)
+			if (await ArchiverPlugin.prototype.moveToVaultTrash.call(this, folderPath)) {
+				new Notice(`Original folder '${folderName}' moved to vault trash (.trash/)`);
+				return true;
+			}
 		}
 
 		console.error(`All deletion attempts failed for ${folderPath}`);
-		new Notice(`Warning: Could not delete or move folder '${folderName}'. You may need to delete it manually.`);
+		new Notice(`Warning: Could not delete folder '${folderName}'. You may need to delete it manually or enable fallback deletion methods in settings.`);
 		return false;
 	}
 
@@ -542,12 +989,32 @@ class ArchiverSettingTab extends PluginSettingTab {
 				}));
 
 		new Setting(containerEl)
+			.setName('Allow fallback deletion methods')
+			.setDesc('When enabled, if normal deletion fails, the plugin will try renaming or moving folders to .trash/. Disable to preserve folder names and linking.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.allowFallbackDeletion)
+				.onChange(async (value) => {
+					this.plugin.settings.allowFallbackDeletion = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
 			.setName('Delete archive after restoration')
 			.setDesc('When enabled, archives will be automatically deleted after successful restoration')
 			.addToggle(toggle => toggle
 				.setValue(this.plugin.settings.deleteArchiveAfterRestore)
 				.onChange(async (value) => {
 					this.plugin.settings.deleteArchiveAfterRestore = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Auto-cleanup orphaned files')
+			.setDesc('When enabled, automatically clean up orphaned temporary files (manifests, checklogs, etc.) on plugin load')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.autoCleanupOrphanedFiles)
+				.onChange(async (value) => {
+					this.plugin.settings.autoCleanupOrphanedFiles = value;
 					await this.plugin.saveSettings();
 				}));
 
