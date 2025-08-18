@@ -1,10 +1,10 @@
 {
-  "id": "mode-shifter",
-  "name": "Mode Shifter",
-  "version": "1.0.0",
-  "minAppVersion": "0.15.0",
-  "description": "A simple plugin to zip and unzip folders in your vault.",
-  "author": "srijrao on Github",
-  "authorUrl": "https://github.com/srijrao",
-  "isDesktopOnly": false
+	"id": "mode-shifter",
+	"name": "Mode Shifter",
+	"version": "1.0.1",
+	"minAppVersion": "0.15.0",
+	"description": "A simple plugin to zip and unzip folders in your vault.",
+	"author": "srijrao on Github",
+	"authorUrl": "https://github.com/srijrao",
+	"isDesktopOnly": false
 }
