@@ -348,6 +348,12 @@ async function deleteOriginalsWithRollback(app: App, zipPath: string, files: str
           }
         }
 
+        // Check if any files in this batch failed to delete
+        const batchFailed = batch.filter(p => !batchDeleted.includes(p));
+        if (batchFailed.length > 0) {
+          throw new Error(`Failed to delete ${batchFailed.length} files in batch: ${batchFailed.join(', ')}`);
+        }
+
         // After a full batch succeeds, write a checkpoint so progress is persisted on disk.
         // The checkpoint includes which files have been deleted so far. If deletion stops
         // mid-way (process crash, power loss), the plugin can read this checkpoint to know

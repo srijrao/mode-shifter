@@ -41,7 +41,7 @@ export default class ArchiverPlugin extends Plugin {
 	// Context menu integration
 	addFileMenuItems(menu: any, file: TAbstractFile, source: string) {
 		// Only show menu items in file explorer
-		if (source !== 'file-explorer') return;
+		if (source !== 'file-explorer-context-menu') return;
 
 		if (file instanceof TFolder) {
 			// Add "Zip Folder" option for folders
@@ -68,7 +68,7 @@ export default class ArchiverPlugin extends Plugin {
 
 	addFilesMenuItems(menu: any, files: TAbstractFile[], source: string) {
 		// Only show menu items in file explorer
-		if (source !== 'file-explorer') return;
+		if (source !== 'file-explorer-context-menu') return;
 
 		// Check if all selected files are folders
 		const allFolders = files.every(file => file instanceof TFolder);
