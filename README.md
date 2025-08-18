@@ -1,5 +1,7 @@
 # Mode Shifter
 
+Current release: 1.0.1 (2025-08-17)
+
 A powerful Obsidian plugin for archiving and managing folders in your vault. Create zip archives of folders, organize them with flexible storage options, and restore them with advanced conflict resolution.
 
 ## ✨ Features
