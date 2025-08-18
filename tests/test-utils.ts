@@ -41,6 +41,7 @@ export function makeFakeVault(initialFiles: Record<string, Uint8Array | string> 
       folders.delete(p);
     },
     async stat(p: string){ return { mtime: 1 } },
+    async exists(p: string){ return files.has(p) || folders.has(p); },
   };
 
   const vault = {
