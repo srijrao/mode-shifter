@@ -8,6 +8,83 @@ const JSZip = require('jszip');
 import { App } from 'obsidian';
 import { CancellationToken } from './progress-modal';
 
+// Safe deletion functionality to ensure files go to trash instead of permanent deletion
+async function safeDeleteFile(app: App, filePath: string, options?: { perFileTimeoutMs?: number }): Promise<boolean> {
+  const { perFileTimeoutMs = 30000 } = options || {};
+  
+  try {
+    // First try system trash (cross-platform using Electron's shell.trashItem)
+    if (await moveToSystemTrash(app, filePath, perFileTimeoutMs)) {
+      return true;
+    }
+    
+    // Fallback to vault trash (.trash folder in vault)
+    if (await moveToVaultTrash(app, filePath, perFileTimeoutMs)) {
+      return true;
+    }
+    
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+// Move file to vault's .trash folder
+async function moveToVaultTrash(app: App, filePath: string, timeoutMs: number): Promise<boolean> {
+  try {
+    const TRASH_DIR = '.trash';
+    // Ensure .trash exists at vault root
+    await app.vault.createFolder(TRASH_DIR).catch(() => {});
+    
+    const fileName = filePath.split('/').pop() || 'file';
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const hash = Math.random().toString(36).slice(2, 8);
+    const trashPath = `${TRASH_DIR}/${fileName}-deleted-${timestamp}-${hash}`;
+    
+    // Use adapter rename to move to trash
+    const adapter: any = app.vault.adapter as any;
+    if (typeof adapter.rename === 'function') {
+      await withTimeout(adapter.rename(filePath, trashPath), timeoutMs, `Moving ${filePath} to trash timed out`);
+      return true;
+    }
+    
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+// Move file to system recycle bin (cross-platform using Electron's shell.trashItem)
+async function moveToSystemTrash(app: App, filePath: string, timeoutMs: number): Promise<boolean> {
+  try {
+    // Use Electron's shell.trashItem API (works on Windows, macOS, Linux)
+    const { shell } = require('electron');
+    if (shell && typeof shell.trashItem === 'function') {
+      // Get the absolute path for the file
+      const adapter: any = app.vault.adapter as any;
+      let absolutePath = filePath;
+      
+      if (adapter && typeof adapter.path === 'object' && adapter.path.join) {
+        // Desktop FileSystemAdapter - construct absolute path
+        const basePath = typeof adapter.getBasePath === 'function' ? adapter.getBasePath() : (adapter.basePath || '.');
+        absolutePath = adapter.path.join(basePath, filePath);
+      }
+      
+      const result = await withTimeout(
+        shell.trashItem(absolutePath),
+        timeoutMs,
+        `Moving ${filePath} to system trash timed out`
+      );
+      
+      return Boolean(result);
+    }
+    
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 // ArchiveResult: describes the result of creating an archive.
 // zipPath: path in the vault where the zip file was written.
 // manifest: a small JSON manifest that lists files included in the zip.
@@ -197,7 +274,9 @@ export async function createArchive(app: App, vaultPath: string, archiveFolder: 
     const content = await withTimeout(zip.generateAsync({ type: 'uint8array' }), perFileTimeoutMs * 4, 'Zip generation timed out');
 
     // Build a human-friendly filename: include the modeName, timestamp and a short random hash.
-    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    // Use high-precision timestamp with milliseconds to avoid identical timestamps
+    const now = new Date();
+    const ts = now.toISOString().replace(/[:.]/g, '-').replace('T', '-').slice(0, -5); // YYYY-MM-DD-HHmmss-SSS
     const hash = Math.random().toString(36).slice(2,8);
     // If all files come from a single top-level folder, use that folder name to make the filename meaningful.
     let baseName = modeName;
@@ -212,8 +291,24 @@ export async function createArchive(app: App, vaultPath: string, archiveFolder: 
       .replace(/[\s_]+/g, '-')
       .replace(/-+/g, '-')
       .replace(/^-+|-+$/g, '');
-    const zipName = `${safeBaseName}-${ts}-${hash}.zip`;
-    const zipPath = `${archiveFolder}/${zipName}`;
+    
+    // Generate unique archive name to prevent duplicates
+    let zipName = `${safeBaseName}-${ts}-${hash}.zip`;
+    let zipPath = `${archiveFolder}/${zipName}`;
+    let counter = 1;
+    
+    // Check if archive already exists and add counter if needed
+    while (await app.vault.adapter.exists(zipPath)) {
+      const counterSuffix = String(counter).padStart(2, '0');
+      zipName = `${safeBaseName}-${ts}-${hash}-${counterSuffix}.zip`;
+      zipPath = `${archiveFolder}/${zipName}`;
+      counter++;
+      
+      // Safety check to prevent infinite loop
+      if (counter > 99) {
+        throw new Error('Too many archive attempts - please try again');
+      }
+    }
 
     // Ensure the archive folder exists. createFolder will reject if a parent doesn't exist,
     // so we ignore errors (folder might already exist).
@@ -287,56 +382,63 @@ async function deleteOriginalsWithRollback(app: App, zipPath: string, files: str
       try {
         for (const p of batch) {
           let success = false;
-          // Prefer the high-level vault API so Obsidian updates internal caches and plugins correctly.
-          const af = app.vault.getAbstractFileByPath(p) as any;
-          if (af) {
-            try {
-              await withTimeout(app.vault.delete(af), perFileTimeoutMs, `Deleting ${p} timed out`);
-              success = true;
-            } catch (e) {
-              // Fall through to adapter-based strategies
-            }
-          }
+          
+          // NEW: Try safe deletion methods first (vault trash, then system trash)
+          success = await safeDeleteFile(app, p, { perFileTimeoutMs });
+          
+          // Fallback to original deletion logic only if safe deletion fails
           if (!success) {
-            // Try adapter.remove with retries on transient Windows errors (EPERM/EACCES/EBUSY/ENOTEMPTY)
-            const tryRemove = async () => {
-              const maxAttempts = 5;
-              let attempt = 0;
-              let lastErr: any = undefined;
-              while (attempt < maxAttempts) {
-                try {
-                  await withTimeout((app.vault.adapter as any).remove(p), perFileTimeoutMs, `Adapter remove ${p} timed out`);
-                  return true;
-                } catch (err) {
-                  const msg = String((err as any)?.message || err).toLowerCase();
-                  lastErr = err;
-                  if (msg.includes('eperm') || msg.includes('eacces') || msg.includes('ebusy') || msg.includes('enotempty') || msg.includes('permission denied')) {
-                    // backoff then retry
-                    await new Promise(r => setTimeout(r, 200 + attempt * 150));
-                    attempt++;
-                    continue;
-                  }
-                  // Non-retryable
-                  break;
-                }
-              }
-              // Attempt a rename-then-remove as a last resort where adapters support rename
+            // Prefer the high-level vault API so Obsidian updates internal caches and plugins correctly.
+            const af = app.vault.getAbstractFileByPath(p) as any;
+            if (af) {
               try {
-                const tmp = p + '.deleting-' + Math.random().toString(36).slice(2,8);
-                if (typeof (app.vault.adapter as any).rename === 'function') {
-                  await (app.vault.adapter as any).rename(p, tmp);
-                  await (app.vault.adapter as any).remove(tmp);
-                  return true;
+                await withTimeout(app.vault.delete(af), perFileTimeoutMs, `Deleting ${p} timed out`);
+                success = true;
+              } catch (e) {
+                // Fall through to adapter-based strategies
+              }
+            }
+            if (!success) {
+              // Try adapter.remove with retries on transient Windows errors (EPERM/EACCES/EBUSY/ENOTEMPTY)
+              const tryRemove = async () => {
+                const maxAttempts = 5;
+                let attempt = 0;
+                let lastErr: any = undefined;
+                while (attempt < maxAttempts) {
+                  try {
+                    await withTimeout((app.vault.adapter as any).remove(p), perFileTimeoutMs, `Adapter remove ${p} timed out`);
+                    return true;
+                  } catch (err) {
+                    const msg = String((err as any)?.message || err).toLowerCase();
+                    lastErr = err;
+                    if (msg.includes('eperm') || msg.includes('eacces') || msg.includes('ebusy') || msg.includes('enotempty') || msg.includes('permission denied')) {
+                      // backoff then retry
+                      await new Promise(r => setTimeout(r, 200 + attempt * 150));
+                      attempt++;
+                      continue;
+                    }
+                    // Non-retryable
+                    break;
+                  }
                 }
-              } catch {}
-              // Give up
-              if (lastErr) throw lastErr;
-              return false;
-            };
-            try {
-              success = await tryRemove();
-            } catch {
-              success = false;
+                // Attempt a rename-then-remove as a last resort where adapters support rename
+                try {
+                  const tmp = p + '.deleting-' + Math.random().toString(36).slice(2,8);
+                  if (typeof (app.vault.adapter as any).rename === 'function') {
+                    await (app.vault.adapter as any).rename(p, tmp);
+                    await (app.vault.adapter as any).remove(tmp);
+                    return true;
+                  }
+                } catch {}
+                // Give up
+                if (lastErr) throw lastErr;
+                return false;
+              };
+              try {
+                success = await tryRemove();
+              } catch {
+                success = false;
+              }
             }
           }
 

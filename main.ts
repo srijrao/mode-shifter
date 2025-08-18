@@ -18,7 +18,6 @@ interface ArchiverSettings {
 	deleteOriginalFolder: boolean;
 	deleteArchiveAfterRestore: boolean;
 	folderGroups: FolderGroup[];
-	allowFallbackDeletion: boolean;
 	autoCleanupOrphanedFiles: boolean;
 }
 
@@ -30,7 +29,6 @@ const DEFAULT_SETTINGS: ArchiverSettings = {
 	deleteOriginalFolder: false,
 	deleteArchiveAfterRestore: true,
 	folderGroups: [],
-	allowFallbackDeletion: false,
 	autoCleanupOrphanedFiles: false
 };
 
@@ -184,8 +182,13 @@ export default class ArchiverPlugin extends Plugin {
 			
 			if (this.settings.deleteArchiveAfterRestore) {
 				try {
-					await this.app.vault.adapter.remove(file.path);
-					new Notice(`Archive ${file.path} deleted after restoration`);
+					// Use safe deletion to move archive to trash instead of permanent deletion
+					const success = await this.safeDeleteFile(file.path);
+					if (success) {
+						new Notice(`Archive ${file.path} moved to trash after restoration`);
+					} else {
+						new Notice(`Warning: Could not move archive to trash, it remains in vault`);
+					}
 				} catch (e: any) {
 					new Notice(`Warning: Could not delete archive: ${e.message}`);
 				}
@@ -289,7 +292,11 @@ export default class ArchiverPlugin extends Plugin {
 				
 				if (this.settings.deleteArchiveAfterRestore) {
 					try {
-						await this.app.vault.adapter.remove(file.path);
+						// Use safe deletion to move archive to trash instead of permanent deletion
+						const success = await this.safeDeleteFile(file.path);
+						if (!success) {
+							new Notice(`Warning: Could not move archive ${file.path} to trash, it remains in vault`);
+						}
 					} catch (e: any) {
 						new Notice(`Warning: Could not delete archive ${file.path}: ${e.message}`);
 					}
@@ -800,25 +807,6 @@ export default class ArchiverPlugin extends Plugin {
 		return false;
 	}
 
-	private async renameThenRemoveDir(path: string): Promise<boolean> {
-		const adapter: any = this.app.vault.adapter as any;
-		if (typeof adapter.rename !== 'function') return false;
-		const tmp = `${path}.deleting-${Math.random().toString(36).slice(2,8)}`;
-		try {
-			await adapter.rename(path, tmp);
-			// Try recursive removal on the renamed path with retries
-			if (await ArchiverPlugin.prototype.removeDirWithRetries.call(this, tmp, true, 5)) return true;
-			// As a fallback, deep-remove contents and rmdir non-recursive
-			await ArchiverPlugin.prototype.deleteContentsRecursivelyByPath.call(this, tmp);
-			if (await ArchiverPlugin.prototype.removeDirWithRetries.call(this, tmp, false, 5)) return true;
-			// Final fallback: move the renamed folder into vault trash
-			if (await ArchiverPlugin.prototype.moveToVaultTrash.call(this, tmp)) return true;
-			return false;
-		} catch {
-			return false;
-		}
-	}
-
 	private async moveToVaultTrash(path: string): Promise<boolean> {
 		const adapter: any = this.app.vault.adapter as any;
 		const TRASH_DIR = '.trash';
@@ -900,23 +888,54 @@ export default class ArchiverPlugin extends Plugin {
 			}
 		} catch {}
 
-		// 4 & 5) Fallback methods (rename/move to trash) - only if setting allows
-		if (this.settings.allowFallbackDeletion) {
-			// 4) Rename then remove as last resort (helps on Windows and macOS when watchers hold locks)
-			if (await ArchiverPlugin.prototype.renameThenRemoveDir.call(this, folderPath)) {
-				new Notice(`Original folder '${folderName}' deleted (after rename)`);
-				return true;
-			}
-
-			// 5) Move to vault trash as a final fallback (lets sync tools finish gracefully)
-			if (await ArchiverPlugin.prototype.moveToVaultTrash.call(this, folderPath)) {
-				new Notice(`Original folder '${folderName}' moved to vault trash (.trash/)`);
-				return true;
-			}
+		// Final fallback: Move to vault trash (always allowed - safe deletion)
+		if (await ArchiverPlugin.prototype.moveToVaultTrash.call(this, folderPath)) {
+			new Notice(`Original folder '${folderName}' moved to vault trash (.trash/)`);
+			return true;
 		}
 
 		console.error(`All deletion attempts failed for ${folderPath}`);
-		new Notice(`Warning: Could not delete folder '${folderName}'. You may need to delete it manually or enable fallback deletion methods in settings.`);
+		new Notice(`Warning: Could not delete folder '${folderName}'. You may need to delete it manually.`);
+		return false;
+	}
+
+	async safeDeleteFile(filePath: string): Promise<boolean> {
+		try {
+			// First try system trash (cross-platform using Electron's shell.trashItem)
+			const { shell } = require('electron');
+			if (shell && typeof shell.trashItem === 'function') {
+				// Get the absolute path for the file
+				const adapter: any = this.app.vault.adapter as any;
+				let absolutePath = filePath;
+				
+				if (adapter && typeof adapter.path === 'object' && adapter.path.join) {
+					// Desktop FileSystemAdapter - construct absolute path
+					const basePath = typeof adapter.getBasePath === 'function' ? adapter.getBasePath() : (adapter.basePath || '.');
+					absolutePath = adapter.path.join(basePath, filePath);
+				}
+				
+				const result = await shell.trashItem(absolutePath);
+				if (result) {
+					console.log(`Successfully moved ${filePath} to system trash`);
+					return true;
+				}
+			}
+		} catch (error) {
+			console.warn('System trash failed, trying vault trash:', error);
+		}
+
+		// Fallback to vault trash
+		try {
+			const file = this.app.vault.getAbstractFileByPath(filePath);
+			if (file) {
+				await this.app.vault.trash(file, false);
+				console.log(`Successfully moved ${filePath} to vault trash`);
+				return true;
+			}
+		} catch (error) {
+			console.error(`Failed to move ${filePath} to trash:`, error);
+		}
+		
 		return false;
 	}
 
@@ -989,18 +1008,8 @@ class ArchiverSettingTab extends PluginSettingTab {
 				}));
 
 		new Setting(containerEl)
-			.setName('Allow fallback deletion methods')
-			.setDesc('When enabled, if normal deletion fails, the plugin will try renaming or moving folders to .trash/. Disable to preserve folder names and linking.')
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.allowFallbackDeletion)
-				.onChange(async (value) => {
-					this.plugin.settings.allowFallbackDeletion = value;
-					await this.plugin.saveSettings();
-				}));
-
-		new Setting(containerEl)
 			.setName('Delete archive after restoration')
-			.setDesc('When enabled, archives will be automatically deleted after successful restoration')
+			.setDesc('When enabled, archives will be automatically moved to trash after successful restoration')
 			.addToggle(toggle => toggle
 				.setValue(this.plugin.settings.deleteArchiveAfterRestore)
 				.onChange(async (value) => {

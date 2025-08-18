@@ -1,6 +1,65 @@
 import { App } from 'obsidian';
 
 /**
+ * Get safe archive location that prevents conflicts and data loss.
+ * 
+ * When archiving "in place", we need to be careful not to create the archive
+ * in a location where it might conflict with existing files or cause issues
+ * during restoration.
+ * 
+ * @param app - Obsidian app instance
+ * @param archiveInPlace - whether to archive in the same location as source
+ * @param archiveFolder - default archive folder when not archiving in place
+ * @param sourceFolderPath - path of the folder being archived
+ * @returns safe archive location path
+ */
+export function getSafeArchiveLocation(
+  app: App, 
+  archiveInPlace: boolean, 
+  archiveFolder: string, 
+  sourceFolderPath: string
+): string {
+  if (!archiveInPlace) {
+    return archiveFolder;
+  }
+  
+  // For "in place" archiving, we need to be more careful
+  const sourceFolder = app.vault.getAbstractFileByPath(sourceFolderPath);
+  const parentPath = sourceFolder?.parent?.path || '';
+  
+  // If archiving in place and the source is at root level,
+  // create archives in a dedicated subfolder to prevent clutter
+  if (!parentPath) {
+    return '_archives';
+  }
+  
+  return parentPath;
+}
+
+/**
+ * Check if an archive location would conflict with restoration.
+ * This prevents data loss scenarios where restoring an archive
+ * would overwrite the archive itself.
+ * 
+ * @param archiveLocation - where the archive will be stored
+ * @param sourceFolderPath - path of the folder being archived
+ * @returns true if there would be a conflict
+ */
+export function wouldRestoreConflict(archiveLocation: string, sourceFolderPath: string): boolean {
+  // If archive location is the same as or inside the source folder,
+  // restoration could overwrite the archive
+  if (archiveLocation === sourceFolderPath) {
+    return true;
+  }
+  
+  if (archiveLocation.startsWith(sourceFolderPath + '/')) {
+    return true;
+  }
+  
+  return false;
+}
+
+/**
  * Create a predictable, reasonably-unique zip filename.
  *
  * Example output: "my-mode-2025-08-14T12-34-56-789Z-k3jf2a.zip"
