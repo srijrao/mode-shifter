@@ -132,12 +132,14 @@ function normalizePath(p: string) {
 // - We clear the timer when the operation finishes to avoid leaking resources.
 function withTimeout<T>(p: Promise<T>, ms: number, message = 'Operation timed out') {
   if (!ms || ms <= 0) return p;
-  let t: NodeJS.Timeout;
+  // Enforce a small minimum to avoid flakiness in environments with coarse timer resolution
+  const effectiveMs = Math.max(5, ms);
+  let t: NodeJS.Timeout | undefined;
   const timeout = new Promise<T>((_, reject) => {
-    t = setTimeout(() => reject(new Error(message)), ms);
+    t = setTimeout(() => reject(new Error(message)), effectiveMs);
   });
   // Promise.race returns the first promise that settles (resolve or reject).
-  return Promise.race([p, timeout]).then((v) => { clearTimeout(t); return v as T; });
+  return Promise.race([p, timeout]).then((v) => { if (t) clearTimeout(t); return v as T; });
 }
 
 // verifyZipIntegrity:
@@ -222,7 +224,9 @@ export async function verifyZipIntegrity(app: App, zipPath: string, expectedFile
 export type CreateArchiveOptions = { 
   perFileTimeoutMs?: number,    // timeout for each small file operation (ms)
   overallTimeoutMs?: number,    // maximum allowed time for the entire archive operation (ms)
-  onProgress?: (done:number,total:number)=>void, // optional progress callback
+  onProgress?: (done:number,total:number)=>void, // progress for the zip build phase
+  onPhaseMessage?: (msg:string)=>void, // optional phase message hook (UI can show "Deleting originals..." etc.)
+  onDeleteProgress?: (deleted:number,total:number)=>void, // progress for deletion phase (if enabled)
   deleteOriginals?: boolean,    // if true, original files will be deleted after successful verification
   batchSize?: number,           // when deleting originals, how many files to delete per batch
   preserveBaseName?: boolean,   // if true, do not override the provided modeName when naming the zip
@@ -340,10 +344,11 @@ export async function createArchive(app: App, vaultPath: string, archiveFolder: 
   // If the caller asked to delete originals after archiving, attempt that with rollback support.
   if (options && (options as any).deleteOriginals) {
     try {
+      options.onPhaseMessage?.('Deleting originals...');
       await deleteOriginalsWithRollback(app, result.zipPath, files, { 
         perFileTimeoutMs: options.perFileTimeoutMs,
         batchSize: options.batchSize
-      });
+      }, options.onDeleteProgress);
     } catch (e) {
       // If deletion failed (and rollback attempted), propagate the error to the caller.
       throw e;
@@ -361,12 +366,19 @@ export async function createArchive(app: App, vaultPath: string, archiveFolder: 
 // deleteOriginalsWithRollback: safely delete original files after archiving.
 // We perform deletions in batches and write a checkpoint after each successful
 // batch so that a partially-completed deletion can be resumed or rolled back.
-async function deleteOriginalsWithRollback(app: App, zipPath: string, files: string[], opts?: { perFileTimeoutMs?: number; batchSize?: number }) {
+async function deleteOriginalsWithRollback(
+  app: App,
+  zipPath: string,
+  files: string[],
+  opts?: { perFileTimeoutMs?: number; batchSize?: number },
+  onProgress?: (done:number,total:number)=>void
+) {
   const perFileTimeoutMs = opts?.perFileTimeoutMs || 30000;
   const batchSize = opts?.batchSize || 10; // Process files in batches to avoid long operations
   const deleted: string[] = []; // global list of files deleted so far
   const failed: string[] = []; // files we could not delete despite retries
   const deleteBatches: string[][] = [];
+  const total = files.length;
 
   // Split files into batches for incremental processing.
   for (let i = 0; i < files.length; i += batchSize) {
@@ -380,7 +392,7 @@ async function deleteOriginalsWithRollback(app: App, zipPath: string, files: str
   const batchDeleted: string[] = [];
 
       try {
-        for (const p of batch) {
+  for (const p of batch) {
           let success = false;
           
           // NEW: Try safe deletion methods first (vault trash, then system trash)
@@ -445,6 +457,8 @@ async function deleteOriginalsWithRollback(app: App, zipPath: string, files: str
           if (success) {
             batchDeleted.push(p);
             deleted.push(p);
+            // emit deletion progress as we go
+            onProgress?.(deleted.length, total);
           } else {
             failed.push(p);
           }

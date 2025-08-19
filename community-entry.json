@@ -1,0 +1,10 @@
+{
+  "id": "mode-shifter",
+  "name": "Mode Shifter",
+  "version": "1.0.1",
+  "minAppVersion": "0.15.0",
+  "description": "Archive and restore folders in your vault with advanced conflict resolution and safe deletion.",
+  "author": "srijrao",
+  "authorUrl": "https://github.com/srijrao",
+  "isDesktopOnly": true
+}

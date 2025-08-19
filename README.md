@@ -192,6 +192,20 @@ npm run dev
 
 MIT License - see LICENSE file for details.
 
+## ⚠️ Desktop-only notice
+
+This plugin uses desktop-only Node/Electron APIs (for example, Electron's `shell.trashItem`) to provide safe system-trash deletion and other file-system operations. Because of this, the plugin requires Obsidian Desktop and will not function on Obsidian Mobile or web builds.
+
+## Third-party libraries & licenses
+
+This project bundles or depends on the following third-party libraries. They are included under their respective licenses — see the linked pages for full license text and attribution details.
+
+- JSZip — MIT. See: https://github.com/Stuk/jszip/blob/main/LICENSE.markdown
+- pako — MIT. See: https://github.com/nodeca/pako/blob/master/LICENSE
+- fast-glob — MIT. See: https://github.com/mrmlnc/fast-glob/blob/master/license
+
+If you require a different set of bundled artifacts for licensing reasons, please raise an issue.
+
 ## 🙏 Acknowledgments
 
 Built for the Obsidian community with focus on reliability, flexibility, and user experience. Special thanks to the community for feedback that led to the v2.0 enhancements.

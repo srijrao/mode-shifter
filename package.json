@@ -1,7 +1,7 @@
 {
-	"name": "obsidian-sample-plugin",
+	"name": "mode-shifter",
 	"version": "1.0.1",
-	"description": "This is a sample plugin for Obsidian (https://obsidian.md)",
+	"description": "Archive and restore folders in your vault with advanced conflict resolution and safe deletion.",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",

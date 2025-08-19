@@ -1,6 +1,7 @@
 import { App, Plugin, PluginSettingTab, Setting, Notice, Modal, TFolder, TAbstractFile, TFile } from 'obsidian';
 import { getVaultBasePath } from './src/utils';
-import { createArchive, restoreArchive, RestorePolicy } from './src/archive';
+import type { RestorePolicy } from './src/archive';
+import * as archiveMod from './src/archive';
 import { ProgressModal, CancellationToken } from './src/progress-modal';
 
 // Folder group interface
@@ -132,11 +133,17 @@ export default class ArchiverPlugin extends Plugin {
 				? folder.parent?.path || '' 
 				: this.settings.archiveFolder;
 			
-			const res = await createArchive(this.app, vaultBase, archiveLocation, folder.name, filesToZip, { 
+			const res = await archiveMod.createArchive(this.app, vaultBase, archiveLocation, folder.name, filesToZip, { 
 				deleteOriginals: this.settings.deleteOriginalFolder,
 				preserveBaseName: true,
-				onProgress: (current, total) => {
-					progressModal.updateProgress(current, total, `Processing file ${current} of ${total}`);
+				onProgress: (current: number, total: number) => {
+					progressModal.updateProgress(current, total, `Zipping file ${current} of ${total}`);
+				},
+				onPhaseMessage: (msg: string) => {
+					progressModal.updateProgress(0, 1, msg);
+				},
+				onDeleteProgress: (deleted: number, total: number) => {
+					progressModal.updateProgress(deleted, total, `Deleting original ${deleted} of ${total}`);
 				},
 				cancellationToken
 			});
@@ -169,10 +176,13 @@ export default class ArchiverPlugin extends Plugin {
 		progressModal.open();
 
 		try {
-			await restoreArchive(this.app, file.path, { 
+			const extraStep = this.settings.deleteArchiveAfterRestore ? 1 : 0;
+			let lastTotal = 0;
+			await archiveMod.restoreArchive(this.app, file.path, { 
 				policy: this.settings.restorePolicy,
-				onProgress: (current, total) => {
-					progressModal.updateProgress(current, total, `Restoring file ${current} of ${total}`);
+				onProgress: (current: number, total: number) => {
+					lastTotal = total;
+					progressModal.updateProgress(current, total + extraStep, `Restoring file ${current} of ${total}`);
 				},
 				cancellationToken
 			});
@@ -181,6 +191,7 @@ export default class ArchiverPlugin extends Plugin {
 			new Notice(`Archive unzipped: ${file.name}`);
 			
 			if (this.settings.deleteArchiveAfterRestore) {
+				progressModal.updateProgress(lastTotal, lastTotal + 1, `Deleting archive...`);
 				try {
 					// Use safe deletion to move archive to trash instead of permanent deletion
 					const success = await this.safeDeleteFile(file.path);
@@ -243,11 +254,15 @@ export default class ArchiverPlugin extends Plugin {
 				? folders[0].parent?.path || '' 
 				: this.settings.archiveFolder;
 			
-			const res = await createArchive(this.app, vaultBase, archiveLocation, folderNames, filesToZip, { 
+			const res = await archiveMod.createArchive(this.app, vaultBase, archiveLocation, folderNames, filesToZip, { 
 				deleteOriginals: this.settings.deleteOriginalFolder,
 				preserveBaseName: true,
-				onProgress: (current, total) => {
-					progressModal.updateProgress(current, total, `Processing file ${current} of ${total}`);
+				onProgress: (current: number, total: number) => {
+					progressModal.updateProgress(current, total, `Zipping file ${current} of ${total}`);
+				},
+				onPhaseMessage: (msg: string) => progressModal.updateProgress(0, 1, msg),
+				onDeleteProgress: (deleted: number, total: number) => {
+					progressModal.updateProgress(deleted, total, `Deleting original ${deleted} of ${total}`);
 				},
 				cancellationToken
 			});
@@ -286,7 +301,7 @@ export default class ArchiverPlugin extends Plugin {
 			try {
 				progressModal.updateProgress(completed, total, `Unzipping ${file.name}...`);
 				
-				await restoreArchive(this.app, file.path, { 
+				await archiveMod.restoreArchive(this.app, file.path, { 
 					policy: this.settings.restorePolicy
 				});
 				
@@ -460,11 +475,15 @@ export default class ArchiverPlugin extends Plugin {
 							? folder.parent?.path || '' 
 							: this.settings.archiveFolder;
 						
-						const res = await createArchive(this.app, vaultBase, archiveLocation, folder.name, filesToZip, { 
+						const res = await archiveMod.createArchive(this.app, vaultBase, archiveLocation, folder.name, filesToZip, { 
 							deleteOriginals: this.settings.deleteOriginalFolder,
 							preserveBaseName: true, // ensure folder.name is used for archive filename base
-							onProgress: (current, total) => {
-								progressModal.updateProgress(current, total, `Processing file ${current} of ${total}`);
+							onProgress: (current: number, total: number) => {
+								progressModal.updateProgress(current, total, `Zipping file ${current} of ${total}`);
+							},
+							onPhaseMessage: (msg: string) => progressModal.updateProgress(0, 1, msg),
+							onDeleteProgress: (deleted: number, total: number) => {
+								progressModal.updateProgress(deleted, total, `Deleting original ${deleted} of ${total}`);
 							},
 							cancellationToken
 						});
@@ -515,10 +534,13 @@ export default class ArchiverPlugin extends Plugin {
 					});
 					progressModal.open();
 
-					await restoreArchive(this.app, latest.path, { 
+					const extraStep = this.settings.deleteArchiveAfterRestore ? 1 : 0;
+					let lastTotal = 0;
+					await archiveMod.restoreArchive(this.app, latest.path, { 
 						policy: this.settings.restorePolicy,
-						onProgress: (current, total) => {
-							progressModal!.updateProgress(current, total, `Restoring file ${current} of ${total}`);
+						onProgress: (current: number, total: number) => {
+							lastTotal = total;
+							progressModal!.updateProgress(current, total + extraStep, `Restoring file ${current} of ${total}`);
 						},
 						cancellationToken
 					});
@@ -528,6 +550,7 @@ export default class ArchiverPlugin extends Plugin {
 					
 					// Delete archive after successful restoration if setting is enabled
 					if (this.settings.deleteArchiveAfterRestore) {
+						progressModal!.updateProgress(lastTotal, lastTotal + 1, `Deleting archive...`);
 						try {
 							await this.app.vault.adapter.remove(latest.path);
 							new Notice(`Archive ${latest.path} deleted after restoration`);
@@ -577,7 +600,7 @@ export default class ArchiverPlugin extends Plugin {
 					if (archives.length === 1) {
 						// If only one archive, restore it directly
 						const archive = archives[0];
-						await restoreArchive(this.app, archive.path, { policy: this.settings.restorePolicy });
+							await archiveMod.restoreArchive(this.app, archive.path, { policy: this.settings.restorePolicy });
 						new Notice(`Restored ${archive.path} using ${this.settings.restorePolicy} policy`);
 						
 						if (this.settings.deleteArchiveAfterRestore) {
@@ -594,7 +617,7 @@ export default class ArchiverPlugin extends Plugin {
 						new ArchiveSelectModal(this.app, archivePaths, async (selectedArchive) => {
 							if (!selectedArchive) return;
 							
-							await restoreArchive(this.app, selectedArchive, { policy: this.settings.restorePolicy });
+							await archiveMod.restoreArchive(this.app, selectedArchive, { policy: this.settings.restorePolicy });
 							new Notice(`Restored ${selectedArchive} using ${this.settings.restorePolicy} policy`);
 							
 							if (this.settings.deleteArchiveAfterRestore) {
@@ -686,10 +709,30 @@ export default class ArchiverPlugin extends Plugin {
 				const firstFolder = this.app.vault.getAbstractFileByPath(group.folders[0]);
 				if (firstFolder instanceof TFolder) archiveLocation = firstFolder.parent?.path || '';
 			}
-			const res = await createArchive(this.app, vaultBase, archiveLocation, group.name, filesToZip, { 
-				deleteOriginals: this.settings.deleteOriginalFolder,
-				preserveBaseName: true // ensure group name is used as archive base name
+
+			// Show progress modal for group zips (similar to single-folder behavior)
+			const cancellationToken = new CancellationToken();
+			const progressModal = new ProgressModal(this.app, {
+				title: `Zipping group: ${group.name}`,
+				showCancel: true,
+				onCancel: () => cancellationToken.cancel()
 			});
+			progressModal.open();
+
+			const res = await archiveMod.createArchive(this.app, vaultBase, archiveLocation, group.name, filesToZip, { 
+				deleteOriginals: this.settings.deleteOriginalFolder,
+				preserveBaseName: true, // ensure group name is used as archive base name
+				onProgress: (current: number, total: number) => {
+					progressModal.updateProgress(current, total, `Zipping file ${current} of ${total}`);
+				},
+				onPhaseMessage: (msg: string) => progressModal.updateProgress(0, 1, msg),
+				onDeleteProgress: (deleted: number, total: number) => {
+					progressModal.updateProgress(deleted, total, `Deleting original ${deleted} of ${total}`);
+				},
+				cancellationToken
+			});
+
+			progressModal.setComplete(`Group archive created: ${res.zipPath}`);
 			new Notice(`Group archive created: ${res.zipPath}`);
 			if (this.settings.deleteOriginalFolder) {
 				for (const folderPath of group.folders) {
@@ -698,7 +741,11 @@ export default class ArchiverPlugin extends Plugin {
 				}
 			}
 		} catch (e: any) {
-			new Notice(`Group archive failed: ${e && e.message}`);
+			if ((e && String(e).includes('Operation was cancelled')) || (e && e.message && e.message.includes('cancel'))) {
+				new Notice('Group archive operation cancelled');
+			} else {
+				new Notice(`Group archive failed: ${e && e.message}`);
+			}
 		}
 	}
 
@@ -706,22 +753,49 @@ export default class ArchiverPlugin extends Plugin {
 		// Look for archives that might belong to this group
 		try {
 			const allArchives = await this.findAllArchives();
-			const groupName = group.name.toLowerCase().replace(/[\s_]+/g, '-');
-			const matchingArchives = allArchives.filter(archive => {
-				const name = archive.path.split('/').pop()?.toLowerCase() || archive.path.toLowerCase();
-				// We consider an archive to belong to the group if its filename starts with the groupName followed by '-' (from our slugified zip naming)
-				return name.startsWith(groupName + '-');
+			// Use a slug function that mirrors archive.ts naming
+			const slug = (s: string) => s
+				.toLowerCase()
+				.replace(/[\s_]+/g, '-')
+				.replace(/-+/g, '-')
+				.replace(/^-+|-+$/g, '');
+			const groupSlug = slug(group.name);
+			let matchingArchives = allArchives.filter(archive => {
+				const base = archive.path.split('/').pop() || archive.path;
+				const baseNoExt = base.replace(/\.zip$/i, '');
+				const baseSlug = slug(baseNoExt);
+				// Match exact slug or slug prefix (groupSlug-) to cover timestamp/hash suffixes
+				if (baseSlug === groupSlug || baseSlug.startsWith(groupSlug + '-')) return true;
+				// Fallback: match raw safe base (case-insensitive) e.g., "My-Group-..."
+				const rawSafe = group.name.replace(/[\s_]+/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '');
+				const lowerBase = baseNoExt.toLowerCase();
+				return lowerBase.startsWith(rawSafe.toLowerCase() + '-');
 			});
 			
 			if (!matchingArchives.length) {
 				new Notice(`No archives found for group '${group.name}'`);
 				return;
 			}
-			
-			// If only one archive found, restore it directly
-			if (matchingArchives.length === 1) {
-				const archive = matchingArchives[0];
-				await restoreArchive(this.app, archive.path, { policy: this.settings.restorePolicy });
+			// Auto-select the latest matching archive (by mtime) and restore it directly
+			matchingArchives.sort((a, b) => b.mtime - a.mtime);
+			const archive = matchingArchives[0];
+			const cancellationToken = new CancellationToken();
+			const progressModal = new ProgressModal(this.app, {
+				title: `Restoring group archive: ${archive.path.split('/').pop()}`,
+				showCancel: true,
+				onCancel: () => cancellationToken.cancel()
+			});
+			// In headless test environments, Modal.open may not exist on the mocked class
+			try { (progressModal as any).open?.(); } catch {}
+
+			try {
+				const extraStep = this.settings.deleteArchiveAfterRestore ? 1 : 0;
+				let lastTotal = 0;
+				await archiveMod.restoreArchive(this.app, archive.path, { policy: this.settings.restorePolicy, onProgress: (current: number, total: number) => { lastTotal = total; progressModal.updateProgress(current, total + extraStep, `Restoring file ${current} of ${total}`); }, cancellationToken });
+				if (this.settings.deleteArchiveAfterRestore) {
+					progressModal.updateProgress(lastTotal, lastTotal + 1, `Deleting archive...`);
+				}
+				progressModal.setComplete(`Restored group archive: ${archive.path}`);
 				new Notice(`Restored group archive: ${archive.path}`);
 				
 				if (this.settings.deleteArchiveAfterRestore) {
@@ -732,24 +806,14 @@ export default class ArchiverPlugin extends Plugin {
 						new Notice(`Warning: Could not delete archive: ${e.message}`);
 					}
 				}
-			} else {
-				// Multiple archives, show selection modal
-				const archivePaths = matchingArchives.map(a => a.path);
-				new ArchiveSelectModal(this.app, archivePaths, async (selectedArchive: string) => {
-					if (!selectedArchive) return;
-					
-					await restoreArchive(this.app, selectedArchive, { policy: this.settings.restorePolicy });
-					new Notice(`Restored group archive: ${selectedArchive}`);
-					
-					if (this.settings.deleteArchiveAfterRestore) {
-						try {
-							await this.app.vault.adapter.remove(selectedArchive);
-							new Notice(`Archive ${selectedArchive} deleted after restoration`);
-						} catch (e: any) {
-							new Notice(`Warning: Could not delete archive: ${e.message}`);
-						}
-					}
-				}).open();
+			} catch (e: any) {
+				if (cancellationToken.isCancelled) {
+					progressModal.setError('Operation was cancelled');
+					new Notice('Restore operation cancelled');
+				} else {
+					progressModal.setError(e.message || 'Unknown error');
+					new Notice('Restore failed: ' + (e && e.message));
+				}
 			}
 		} catch (e: any) {
 			new Notice(`Group unzip failed: ${e && e.message}`);
