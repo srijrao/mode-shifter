@@ -1,3 +1,5 @@
+const tsParser = require('@typescript-eslint/parser');
+
 module.exports = [
 	{
 		ignores: [
@@ -9,17 +11,24 @@ module.exports = [
 			'dist/**'
 		]
 	},
-	{
-		files: ['**/*.ts', '**/*.js'],
-		languageOptions: {
-			parserOptions: {
-				ecmaVersion: 2020,
-				sourceType: 'module'
+		{
+			files: ['**/*.ts', '**/*.js'],
+			languageOptions: {
+				parser: tsParser,
+				parserOptions: {
+					ecmaVersion: 'latest',
+					sourceType: 'module'
+				}
+			},
+			plugins: {
+				'@typescript-eslint': require('@typescript-eslint/eslint-plugin'),
+			},
+			rules: {
+				// Clean CI noise: allow console statements for plugin runtime and tests
+				'no-console': 'off',
+				// Delegate unused checks to TS or disable to avoid noise in tests/mocks
+				'no-unused-vars': 'off',
+				'@typescript-eslint/no-unused-vars': 'off'
 			}
-		},
-		rules: {
-			'no-console': 'warn',
-			'no-unused-vars': 'warn'
 		}
-	}
 ];

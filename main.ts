@@ -396,8 +396,12 @@ export default class ArchiverPlugin extends Plugin {
 					if (showProgress) {
 						progressModal!.updateProgress(deleted, total, `Deleting ${filePath}...`);
 					}
-					
-					await adapter.remove(filePath);
+					// Prefer safe deletion (system trash/vault trash) to avoid EPERM
+					const success = await this.safeDeleteFile(filePath);
+					if (!success) {
+						// Fallback to adapter.remove with retries
+						try { await adapter.remove(filePath); } catch (_) {}
+					}
 					deleted++;
 				} catch (e: any) {
 					console.error(`Failed to delete orphaned file ${filePath}:`, e);

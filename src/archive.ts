@@ -266,7 +266,14 @@ export async function createArchive(app: App, vaultPath: string, archiveFolder: 
       // read each file using the vault adapter, with a per-file timeout to avoid hangs.
       const data = await withTimeout(app.vault.adapter.readBinary(relPath), perFileTimeoutMs, `Reading ${relPath} timed out`);
       // Add file contents to zip using the relative path as the entry name.
-      zip.file(relPath, data as ArrayBuffer);
+      // Set explicit unix permissions to avoid readonly artifacts when extracted on other systems.
+      try {
+        // Use POSIX regular-file mode (S_IFREG | 0644) so attributes persist in external file attributes
+        zip.file(relPath, data as ArrayBuffer, { unixPermissions: 0o100644 } as any);
+      } catch (_) {
+        // Fallback without options if the environment/types reject unixPermissions
+        zip.file(relPath, data as ArrayBuffer);
+      }
       // Record the path in the manifest so the zip contents are discoverable later.
       manifest.files.push(relPath);
       done++;
@@ -320,11 +327,15 @@ export async function createArchive(app: App, vaultPath: string, archiveFolder: 
 
     // Write the zip binary to the vault using adapter.writeBinary. We convert the Uint8Array
     // buffer into a plain ArrayBuffer for compatibility with some adapters.
-    await withTimeout(Promise.resolve().then(()=>app.vault.adapter.writeBinary(zipPath, (content as Uint8Array).buffer as ArrayBuffer)), perFileTimeoutMs * 2, 'Writing zip timed out');
+  await withTimeout(Promise.resolve().then(()=>app.vault.adapter.writeBinary(zipPath, (content as Uint8Array).buffer as ArrayBuffer)), perFileTimeoutMs * 2, 'Writing zip timed out');
+  // Try to normalize permissions on the created archive to be writable by user.
+  tryChmod666(app, zipPath).catch(()=>{});
 
     // Write a human readable manifest next to the zip so others (or later runs) know what was archived.
     const manifestPath = `${zipPath}.manifest.json`;
-    await withTimeout(Promise.resolve().then(()=>app.vault.adapter.write(manifestPath, JSON.stringify(manifest, null, 2))), perFileTimeoutMs, 'Writing manifest timed out');
+  await withTimeout(Promise.resolve().then(()=>app.vault.adapter.write(manifestPath, JSON.stringify(manifest, null, 2))), perFileTimeoutMs, 'Writing manifest timed out');
+  // Normalize permissions on the manifest as well.
+  tryChmod666(app, manifestPath).catch(()=>{});
 
     // IMPORTANT: Verify zip integrity before allowing any deletions of original files.
     // This prevents data loss in case the zip is corrupted or incomplete.
@@ -565,6 +576,8 @@ async function restoreFileFromZip(app: App, zipPath: string, filePath: string, o
     perFileTimeoutMs, 
     `Writing restored ${filePath} timed out`
   );
+  // Make restored file writable to avoid readonly/EPERM issues later
+  tryChmod666(app, filePath).catch(()=>{});
 }
 
 // RestorePolicy: controls how restoreArchive handles conflicts with existing files.
@@ -646,7 +659,9 @@ export async function restoreArchive(app: App, zipPath: string, options?: { perF
       }
 
       // Write file (either new or overwrite) using adapter.writeBinary.
-      await withTimeout(Promise.resolve().then(()=>app.vault.adapter.writeBinary(entry, ab as ArrayBuffer)), perFileTimeoutMs, `Writing ${entry} timed out`);
+  await withTimeout(Promise.resolve().then(()=>app.vault.adapter.writeBinary(entry, ab as ArrayBuffer)), perFileTimeoutMs, `Writing ${entry} timed out`);
+  // Normalize permissions on restored files
+  tryChmod666(app, entry).catch(()=>{});
       done++;
       options?.onProgress && options.onProgress(done, total);
     }
@@ -654,4 +669,27 @@ export async function restoreArchive(app: App, zipPath: string, options?: { perF
 
   // Apply an overall timeout to the restore operation as well.
   return withTimeout(main, options?.overallTimeoutMs || 10 * 60 * 1000, 'Restore operation timed out');
+}
+
+// Helper: attempt to chmod a vault-relative path to 0666 (rw for all) to avoid readonly artifacts on Windows.
+// This is best-effort and silently ignored if not applicable.
+async function tryChmod666(app: App, vaultRelPath: string): Promise<void> {
+  try {
+    const adapter: any = app?.vault?.adapter as any;
+    if (!adapter) return;
+    // Try to obtain absolute filesystem path on desktop FileSystemAdapter
+    let basePath: string | undefined = undefined;
+    if (typeof adapter.getBasePath === 'function') basePath = adapter.getBasePath();
+    else if (typeof adapter.basePath === 'string') basePath = adapter.basePath;
+    if (!basePath) return;
+    const pathMod = adapter.path || require('path');
+    const abs = pathMod.join(basePath, vaultRelPath);
+    const fs = require('fs');
+    // 0o666 = rw-rw-rw- (actual effect subject to umask)
+    await new Promise<void>((resolve, reject) => {
+      fs.chmod(abs, 0o666, (err: any) => err ? reject(err) : resolve());
+    });
+  } catch (_) {
+    // Ignore errors; not all environments support direct chmod or absolute paths
+  }
 }
